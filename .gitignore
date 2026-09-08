@@ -1,0 +1,9 @@
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+
+# Chains symlink target lives on scratch, not tracked here
