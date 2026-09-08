@@ -1,14 +1,14 @@
 import os
-import numpy as np
+import sys
 from pathlib import Path
+import numpy as np
 import lsstypes as types
 from clustering_statistics.tools import get_stats_fn
 import matplotlib.pyplot as plt
 from lsstypes import ObservableTree
-import sys
-ROOT_DIR = Path(__file__).resolve().parents[2]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import env  # noqa: F401
 sys.path.insert(0, "/global/homes/a/alexpzfz/comet-emu")
 from observables import PowerSpectrumMultipoles, BispectrumSugiyamaMultipoles, JointObservable
 from params import Params
@@ -35,7 +35,7 @@ def _fmt_float(x):
 
 
 def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, kmaxB=None,
-           de_model='lambda', reparam_option='full', free_Mnu=False, outdir='./chains', extra=None,
+           de_model='lambda', reparam_option='full', free_Mnu=False, outdir=str(env.CHAINS_DIR), extra=None,
            counterterm_basis='DESIct'):
 
     if not isinstance(tracer_label, list):
@@ -160,7 +160,7 @@ if __name__ == "__main__":
     parser.add_argument('--counterterm_basis', type=str, default='DESIct', choices=['DESIct', 'Comet'])
     parser.add_argument('--freedom', type=str, default='max', choices=['min', 'max', 'interm'])
     parser.add_argument('--free_Mnu', action='store_true')
-    parser.add_argument('--outdir', type=str, default='./chains')
+    parser.add_argument('--outdir', type=str, default=str(env.CHAINS_DIR))
     parser.add_argument('--n_live', type=int, default=2000)
     parser.add_argument('--extra', type=str, default=None, help="Extra string to add to output filename for uniqueness (e.g. to distinguish different sampler settings).")
     parser.add_argument('--minimize', action='store_true', help="Run an iMinuit MIGRAD minimization instead of Nautilus nested sampling.")

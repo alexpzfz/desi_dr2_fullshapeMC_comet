@@ -1,8 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import sys
-sys.path.append('../')
-sys.path.append('../../../')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import env  # noqa: F401
 import plot_utils as pu
 from fit_cutsky_abacushf import get_fn
 from postprocess import export_to_text
@@ -17,7 +18,7 @@ markers = {'Omega_m': cosmo.get('Omega_m'),
            'Omega_b': cosmo.get('Omega_b'),
            'sigma8': cosmo.sigma8_cb,}
 
-out_dir = '/global/u2/a/alexpzfz/full-shape_wrap/tmp/mock_challenge/chains'
+out_dir = str(env.CHAINS_DIR)
 
 tracers = ['LRG', 'ELG', 'QSO']
 zranges = {'LRG': [(0.4, 0.6), (0.6, 0.8), (0.8, 1.1)],

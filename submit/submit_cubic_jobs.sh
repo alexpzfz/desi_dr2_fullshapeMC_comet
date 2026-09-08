@@ -1,4 +1,5 @@
 #!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main
 export OMP_NUM_THREADS=1
 
@@ -17,11 +18,11 @@ for kmaxP in "${kmaxPcases[@]}"; do
                 if [[ "$cosmo" == "c000" ]]; then
                     for hod in "${hodcases[@]}"; do
                         sbatch --array="$array" --cpus-per-task="$cpus_per_task" \
-                            submit_cubic.sh -- --kmaxP $kmaxP --kmaxB $kmaxB --de_model "$de_model" --cosmo "$cosmo" --hod "$hod" --bispec
+                            "$SCRIPT_DIR/submit_cubic.sh" -- --kmaxP $kmaxP --kmaxB $kmaxB --de_model "$de_model" --cosmo "$cosmo" --hod "$hod" --bispec
                     done
                 else
                     sbatch --array="$array" --cpus-per-task="$cpus_per_task" \
-                        submit_cubic.sh -- --kmaxP $kmaxP --kmaxB $kmaxB --de_model "$de_model" --cosmo "$cosmo" --bispec
+                        "$SCRIPT_DIR/submit_cubic.sh" -- --kmaxP $kmaxP --kmaxB $kmaxB --de_model "$de_model" --cosmo "$cosmo" --bispec
                 fi
             done
         done

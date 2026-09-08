@@ -6,6 +6,8 @@
 #SBATCH --job-name=mc_cubic
 #SBATCH --account=desi
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 # Map each array index to one tracer.
 tracers=("LRG" "ELG" "QSO")
 
@@ -26,7 +28,7 @@ freedom='interm'
 de_model='lambda'
 reparam='full'
 counterterm_basis='DESIct'
-outdir='./chains'
+outdir="$REPO_ROOT/outputs/chains"
 n_live='2000'
 
 print_usage() {
@@ -134,7 +136,7 @@ export OMP_NUM_THREADS=1
 # Build the command based on mode
 if [ "$joint_mode" = true ]; then
     # Joint fit mode: pass all tracers as arguments to fit_cubic.py
-    srun -n 1 -c "$slurm_cpus" --cpu-bind=cores python -u fit_cubic.py \
+    srun -n 1 -c "$slurm_cpus" --cpu-bind=cores python -u "$REPO_ROOT/src/fit_cubic.py" \
         --tracer "${tracers[@]}" \
         --hod "$hod" \
         --cosmo "$cosmo" \
@@ -150,7 +152,7 @@ if [ "$joint_mode" = true ]; then
         ${bispec_defaults[@]} "${forwarded_user_args[@]}"
 else
     # Array mode: single tracer per task
-    srun -n 1 -c "$slurm_cpus" --cpu-bind=cores python -u fit_cubic.py \
+    srun -n 1 -c "$slurm_cpus" --cpu-bind=cores python -u "$REPO_ROOT/src/fit_cubic.py" \
         --tracer "$tracer" \
         --hod "$hod" \
         --cosmo "$cosmo" \

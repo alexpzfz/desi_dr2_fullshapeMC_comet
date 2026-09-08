@@ -7,10 +7,8 @@ from clustering_statistics.box_tools import get_box_stats_fn
 import matplotlib.pyplot as plt
 from lsstypes import ObservableTree
 import sys
-#ROOT_DIR = Path(__file__).resolve().parents[2]
-# if str(ROOT_DIR) not in sys.path:
-#     sys.path.insert(0, str(ROOT_DIR))
-sys.path.append('../../')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import env  # noqa: F401
 from observables import PowerSpectrumMultipoles, BispectrumSugiyamaMultipoles, JointObservable
 from utils import cut_cov, cut_window
 

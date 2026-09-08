@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-sys.path.append('../')
-sys.path.append('../../../')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import env  # noqa: F401
 
 import plot_utils as pu
 from postprocess import export_to_text
@@ -82,7 +82,7 @@ def process_chain(chain_file):
 
 
 if __name__ == '__main__':
-    out_dir = Path('/global/homes/a/alexpzfz/full-shape_wrap/tmp/mock_challenge/chains')
+    out_dir = env.CHAINS_DIR
     chain_files = sorted(out_dir.glob('Abacus-hf-cubic_*.h5'))
 
     if not chain_files:

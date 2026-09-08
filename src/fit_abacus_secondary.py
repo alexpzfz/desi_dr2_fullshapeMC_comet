@@ -1,5 +1,7 @@
 import sys
-sys.path.append('../../')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import env  # noqa: F401
 import numpy as np
 from likelihood import Likelihood
 from observables import PowerSpectrumMultipoles
@@ -99,7 +101,7 @@ if __name__ == "__main__":
 
     am_params = ['btd_r', 'a0_r', 'a2_r', 'NP0_r', 'NP20_r', 'NP22_r']
     like = Likelihood(obs, emu, pars, am_params=am_params)
-    fn = f'./chains/Abacus_LRG_z0.725_{cosmo}_maxfree_p0p2_kmax0.3_reparam-{args.reparam_option}_test_new'
+    fn = f'{env.CHAINS_DIR}/Abacus_LRG_z0.725_{cosmo}_maxfree_p0p2_kmax0.3_reparam-{args.reparam_option}_test_new'
     fn_snap = fn + '_nautilus.hdf5'
     sampler = NautilusSampler(pars, like, filepath=fn_snap, pool=8)
     sampler.sample(verbose=True)

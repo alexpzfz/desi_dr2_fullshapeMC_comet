@@ -1,14 +1,15 @@
 import os
-import numpy as np
+import sys
 from pathlib import Path
+import numpy as np
 import lsstypes as types
 from clustering_statistics.tools import get_stats_fn
 import matplotlib.pyplot as plt
 from lsstypes import ObservableTree
-import sys
-ROOT_DIR = Path(__file__).resolve().parents[2]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import env  # noqa: F401
+
 from observables import PowerSpectrumMultipoles, BispectrumSugiyamaMultipoles, JointObservable
 from params import Params
 from likelihood import Likelihood
@@ -252,7 +253,7 @@ def _fmt_float(x):
 
 
 def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, kmaxB=None,
-           de_model='lambda', reparam_option='full', free_Mnu=False, outdir='./chains', extra=None):
+           de_model='lambda', reparam_option='full', free_Mnu=False, outdir=str(env.CHAINS_DIR), extra=None):
 
     if not isinstance(tracer_label, list):
         tracer_label = [tracer_label] 
@@ -356,7 +357,7 @@ if __name__ == "__main__":
     parser.add_argument('--freedom', type=str, default='max', choices=['min', 'max', 'adhoc'])
     parser.add_argument('--free_Mnu', action='store_true')
     parser.add_argument('--force_nmocks', type=int, default=None, help="Force the number of mocks used for covariance rescaling. Use with caution!")
-    parser.add_argument('--outdir', type=str, default='./chains')
+    parser.add_argument('--outdir', type=str, default=str(env.CHAINS_DIR))
 
     args = parser.parse_args()
 

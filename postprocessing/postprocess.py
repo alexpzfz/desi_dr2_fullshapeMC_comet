@@ -240,9 +240,11 @@ def export_to_text(samples, out_fn, comm=None, engine='class', which='cb'):
 if __name__ == "__main__":
     #test
     import sys
-    sys.path.append("/global/homes/a/alexpzfz/full-shape_wrap/tmp/mock_challenge")
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import env  # noqa: F401
     import plot_utils as pu
-    fn = '/global/homes/a/alexpzfz/full-shape_wrap/tmp/mock_challenge/chains/Abacus-hf-dr2-v2-altmtl_ELG2_GCcomb_intermfreedom_lambda_pk_dk0.01_kmax0.35-0.25_fullreparam_bk_dk0.01_kmax0.1-0.1.h5'
+    fn = str(env.CHAINS_DIR / 'Abacus-hf-dr2-v2-altmtl_ELG2_GCcomb_intermfreedom_lambda_pk_dk0.01_kmax0.35-0.25_fullreparam_bk_dk0.01_kmax0.1-0.1.h5')
     samples = pu.get_samples(fn)
 
     out_fn = 'test_output.txt'

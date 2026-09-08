@@ -1,5 +1,7 @@
 import sys
-sys.path.append('../../')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import env  # noqa: F401
 import numpy as np
 from params import Params
 from theory import COMET

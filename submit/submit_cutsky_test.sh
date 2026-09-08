@@ -8,6 +8,8 @@
 #SBATCH --account=desi
 #SBATCH --array=0-5
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 dks=(0.005 0.01)
 regions=(SGC NGC GCcomb)
 
@@ -34,7 +36,7 @@ set --
 
 source /global/common/software/desi/users/adematti/cosmodesi_environment.sh
 export OMP_NUM_THREADS=1
-srun -n 1 -c 8 --cpu-bind=cores python -u fit_cutsky_secondgen.py \
+srun -n 1 -c 8 --cpu-bind=cores python -u "$REPO_ROOT/src/fit_cutsky_secondgen.py" \
     --tracer LRG \
     --zrange 0.4 0.6 \
     --region $region \

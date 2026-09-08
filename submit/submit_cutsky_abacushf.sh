@@ -1,10 +1,12 @@
 #!/bin/bash
 #SBATCH --qos=shared
-#SBATCH --time=2:00:00
+#SBATCH --time=8:00:00
 #SBATCH --ntasks=1
 #SBATCH --constraint=cpu
 #SBATCH --job-name=mc2f
 #SBATCH --account=desi
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Map each array index to one tracer/z bin.
 #zranges=("LRG 0.4 0.6" "LRG 0.6 0.8" "LRG 0.8 1.1" "ELG_LOP 0.8 1.1" "ELG_LOP 1.1 1.6" "QSO 0.8 2.1")
@@ -12,33 +14,37 @@ tracer_labels=("LRG1" "LRG2" "LRG3" "ELG1" "ELG2" "QSO")
 
 # Power spectrum settings
 dkP="0.005"
-kminP="0.01 0.01"
+kminP="0.02 0.02"
 kmaxP="0.35 0.25"
+ellP="0 2"
 ellwinP="0 2 4"
-kwinminP="0.001 0.001 0.001"
-kwinmaxP="0.4 0.4 0.4"
+kwinminP="0.0015 0.0015 0.0015"
+kwinmaxP="0.5 0.5 0.5"
 
 # Bisectrum settings
-dkB="0.01"
-kminB="0.01 0.01"
+dkB="0.005"
+kminB="0.02 0.02"
 kmaxB="0.2 0.15"
+ellB="000 202"
+#ellwinB="000 022 110 112 220 222"
+#kwinminB="0.005 0.005 0.005 0.005 0.005 0.005"
+#kwinmaxB="0.23 0.23 0.23 0.23 0.23 0.23"
 ellwinB="000 022"
-kwinminB="0.005 0.005"
-kwinmaxB="0.25 0.25"
+kwinminB="0.0015 0.0015"
+kwinmaxB="0.3 0.3"
 
 
 # Other settings
-freedom='adhoc'
+freedom='interm'
 free_Mnu=''
 region='GCcomb'
-force_nmocks=''
 de_model='--de_model lambda'
 
 print_usage() {
         script_name=$(basename "$0")
         cat <<EOF
 Usage:
-    sbatch [sbatch options] $script_name -- [fit_cutsky_secondgen.py options]
+    sbatch [sbatch options] $script_name -- [fit_cutsky_abacushf.py options]
 
 Important:
     Use '--' to separate sbatch options from python/script options.
@@ -127,6 +133,7 @@ if [ "$has_bispec" = true ]; then
         --dkB $dkB
         --kminB $kminB
         --kmaxB $kmaxB
+        --ellB $ellB
         --ellwinB $ellwinB
         --kwinminB $kwinminB
         --kwinmaxB $kwinmaxB
@@ -144,30 +151,32 @@ if [ "$joint_mode" = true ]; then
     # Joint fit mode: pass all tracers as arguments to single --tracer_label
     tracer_args=(--tracer_label "${tracer_labels[@]}")
     
-    srun -n 1 -c "$slurm_cpus" --cpu-bind=cores python -u fit_cutsky_secondgen.py \
+    srun -n 1 -c "$slurm_cpus" --cpu-bind=cores python -u "$REPO_ROOT/src/fit_cutsky_abacushf.py" \
         "${tracer_args[@]}" \
         --region $region \
         --kminP $kminP \
         --kmaxP $kmaxP \
+        --ellP $ellP \
         --ellwinP $ellwinP \
         --kwinminP $kwinminP \
         --kwinmaxP $kwinmaxP \
         --freedom "$freedom" \
         --dkP $dkP \
-        $de_model $force_nmocks $free_Mnu \
+        $de_model $free_Mnu \
         ${bispec_defaults[@]} "${forwarded_user_args[@]}"
 else
     # Array mode: single tracer per task
-    srun -n 1 -c "$slurm_cpus" --cpu-bind=cores python -u fit_cutsky_secondgen.py \
+    srun -n 1 -c "$slurm_cpus" --cpu-bind=cores python -u "$REPO_ROOT/src/fit_cutsky_abacushf.py" \
         --tracer_label "$tracer_label" \
         --region $region \
         --kminP $kminP \
         --kmaxP $kmaxP \
+        --ellP $ellP \
         --ellwinP $ellwinP \
         --kwinminP $kwinminP \
         --kwinmaxP $kwinmaxP \
         --freedom "$freedom" \
         --dkP $dkP \
-        $de_model $force_nmocks $free_Mnu \
+        $de_model $free_Mnu \
         ${bispec_defaults[@]} "${forwarded_user_args[@]}"
 fi
