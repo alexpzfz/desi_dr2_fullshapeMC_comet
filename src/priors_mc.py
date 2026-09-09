@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from functools import partial
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import env  # noqa: F401
 import numpy as np
@@ -12,10 +13,31 @@ cosmo_abacus = {'c000': {'wb': 0.02237, 'wc': 0.1200, 'h': 0.6736, 'As': 2.083, 
                 'c002': {'wb': 0.02237, 'wc': 0.1200, 'h': 0.6278, 'As': 2.314, 'ns': 0.9649, 'Mnu': 0.06, 'w0': -0.7, 'wa': -0.5},
                 'c004': {'wb': 0.02237, 'wc': 0.1200, 'h': 0.6736, 'As': 1.7949, 'ns': 0.9649, 'Mnu': 0.06}}
 
+def _copy_param(p, source_name):
+    """Derived-parameter function that ties a parameter to the value of another one."""
+    return p[source_name]
+
+
+def _compute_sigma8_ref(emu, z_array):
+    """Reference sigma8 at the fiducial cosmology, evaluated at each z in z_array.
+
+    Mirrors the sigma8 computation in postprocessing/add_sigmaR.py, using
+    R=8/h Mpc when the emulator works in Mpc units, or R=8 Mpc/h when it
+    works in Mpc/h units, so that it is always directly comparable to the
+    'sigma_8' derived parameter (see Params.get_sigma_8).
+    """
+    h = cosmo_fid['h']
+    R = 8.0 / h if emu.use_Mpc else 8.0
+    comet_dict = {'wb': cosmo_fid['wb'], 'wc': cosmo_fid['wc'], 'h': h, 'ns': cosmo_fid['ns'],
+                  'As': cosmo_fid['As'], 'Mnu': cosmo_fid['Mnu'], 'z': np.array(z_array, dtype=float)}
+    return np.atleast_1d(emu.sigmaR(R, comet_dict, de_model='lambda'))
+
+
 def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
              de_model='lambda', freedom='max', b1_ref=2.109, sigmaR_ref=0.539, sigma1_eff=150/70 * 10**(1/3) * (1 + 0.8)**(1/2), fsat=0.13,
-             bispec=False, free_Mnu=False, z_array=None, ns_times_Planck=10):
-    
+             bispec=False, free_Mnu=False, z_array=None, ns_times_Planck=10,
+             use_Mpc=True, avirB_free=False):
+
     if isinstance(reparam_option, str) and reparam_option.lower() == 'none':
         reparam_option = None
 
@@ -37,11 +59,24 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
         return arr
 
     b1_ref = _to_nz_array(b1_ref, 'b1_ref')
-    sigmaR_ref = _to_nz_array(sigmaR_ref, 'sigmaR_ref')
     sigma1_eff = _to_nz_array(sigma1_eff, 'sigma1_eff')
     fsat = _to_nz_array(fsat, 'fsat')
 
-    emu = COMET(model='VDG_infty', use_Mpc=True, bias_basis=bias_basis, counterterm_basis=counterterm_basis)
+    emu = COMET(model='VDG_infty', use_Mpc=use_Mpc, bias_basis=bias_basis, counterterm_basis=counterterm_basis)
+
+    # The reparametrization needs a reference sigma_R matching whichever sigma
+    # (sigma_12 or sigma_8) it is normalized against, which in turn depends on
+    # the working units (Mpc uses sigma_12, Mpc/h uses sigma_8).
+    if use_Mpc:
+        sigma_kind = 'sigma_12'
+        active_sigmaR_ref = _to_nz_array(sigmaR_ref, 'sigmaR_ref')
+    else:
+        sigma_kind = 'sigma_8'
+        # if sigma8_ref is not None:
+        #     active_sigmaR_ref = _to_nz_array(sigma8_ref, 'sigma8_ref')
+        # else:
+        #     active_sigmaR_ref = _compute_sigma8_ref(emu, z_array)
+        active_sigmaR_ref = _to_nz_array(sigmaR_ref, 'sigmaR_ref')
     coev_params = ['bK2', 'btd'] if freedom == 'min' else []
     pars = Params(emu, coev_params=coev_params, z_array=z_array)
     #pars = Params(emu, coev_params=coev_params)
@@ -75,18 +110,23 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
     btdref = 23./42.*(b1_ref - 1.)
 
     h = cosmo_fid['h']
+    # The Gaussian widths below (stoch_scale, NP20_r, NP22_r) are defined as
+    # "natural" scales in Mpc/h units; when working in Mpc they must be
+    # converted down by the relevant power of h, but when already working in
+    # Mpc/h no conversion is needed.
+    hconv = h if use_Mpc else 1.0
     stoch_scales = {'max': 500., 'min': 50., 'interm': 50.}
-    stoch_scale = stoch_scales[freedom] / (h**2)
-    
+    stoch_scale = stoch_scales[freedom] / (hconv**2)
+
 
     stochastic_mode = 'ap'
-    counterterms_mode = 'ap+sigma_12'
+    counterterms_mode = f'ap+{sigma_kind}'
     if reparam_option == 'full':
-        bias_mode = 'ap+sigma_12'
+        bias_mode = f'ap+{sigma_kind}'
     elif reparam_option == 'hybrid':
-        bias_mode = 'sigma_12'
+        bias_mode = sigma_kind
 
-    
+
     gauss_scales = {
         'max': {'NP0_r': np.full(nz, 20., dtype=float), 'NP20_r': 50. * fsat * sigma1_eff**2, 'NP22_r': 50. * fsat * sigma1_eff**2},
         'min': {'NP0_r': np.full(nz, 2., dtype=float), 'NP20_r': 5. * fsat * sigma1_eff**2, 'NP22_r': 5. * fsat * sigma1_eff**2},
@@ -97,7 +137,7 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
 
     if reparam_option is not None:
         pars.use_reparametrization(bias_mode=bias_mode, counterterms_mode=counterterms_mode,
-                                    stochastic_mode=stochastic_mode, sigmaR_ref=sigmaR_ref)
+                                    stochastic_mode=stochastic_mode, sigmaR_ref=active_sigmaR_ref)
 
     sub_rep = '_r' if reparam_option is not None else ''
 
@@ -116,10 +156,10 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
             pars.update_parameter(f'bk2{subscript}', bK2ref[iz], prior=(bK2ref[iz], 5), prior_type='gaussian', fixed=False)
             pars.update_parameter(f'btd{subscript}', btdref[iz], prior=(btdref[iz], 1.), prior_type='gaussian', fixed=False)
 
-        pars.update_parameter(f'avir{sub_idz}', 5., prior=(0, 30.), prior_type='uniform', fixed=False)
+        pars.update_parameter(f'avir{sub_idz}', 5., prior=(0, 20./hconv), prior_type='uniform', fixed=False)
         pars.update_parameter(f'NP0{subscript}', 0., prior=(0, gs['NP0_r'][iz]), prior_type='gaussian', fixed=False)
-        pars.update_parameter(f'NP20{subscript}', 0., prior=(0, gs['NP20_r'][iz]/h**2), prior_type='gaussian', fixed=False)
-        pars.update_parameter(f'NP22{subscript}', 0., prior=(0, gs['NP22_r'][iz]/h**2), prior_type='gaussian', fixed=False)
+        pars.update_parameter(f'NP20{subscript}', 0., prior=(0, gs['NP20_r'][iz]/hconv**2), prior_type='gaussian', fixed=False)
+        pars.update_parameter(f'NP22{subscript}', 0., prior=(0, gs['NP22_r'][iz]/hconv**2), prior_type='gaussian', fixed=False)
 
         if counterterm_basis == 'DESIct':
             pars.update_parameter(f'a0{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
@@ -136,7 +176,11 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
         if bispec:
             pars.update_parameter(f'NB0{subscript}', 0., prior=(0, 1.), prior_type='gaussian', fixed=False)
             pars.update_parameter(f'MB0{subscript}', 0., prior=(0, 3.), prior_type='gaussian', fixed=False)
-            pars.update_parameter(f'avirB{sub_idz}', 0., prior=(0, 30.), prior_type='uniform', fixed=False)
+            if avirB_free:
+                pars.update_parameter(f'avirB{sub_idz}', 0., prior=(0, 20./hconv), prior_type='uniform', fixed=False)
+            else:
+                # Default: tie avirB to avir instead of sampling it independently.
+                pars.set_derived_param(f'avirB{sub_idz}', partial(_copy_param, source_name=f'avir{sub_idz}'), exported=True)
         else:
             pars.set_and_fix_param(f'NB0{subscript}', 0.)
             pars.set_and_fix_param(f'MB0{subscript}', 0.)

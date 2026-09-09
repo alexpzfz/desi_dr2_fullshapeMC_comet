@@ -6,4 +6,6 @@
 __pycache__/
 *.pyc
 
+# logs
+outputs/logs
 # Chains symlink target lives on scratch, not tracked here

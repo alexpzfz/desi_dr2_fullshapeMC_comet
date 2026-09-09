@@ -219,8 +219,9 @@ def get_fn_box(outdir, kind, mock_type, tracer, zsnap, cosmo, hod, dkP, dkB=None
     
 cosmo_fid = {'wb': 0.02237, 'wc': 0.1200, 'h': 0.6736, 'As': 2.0830, 'ns': 0.9649, 'Mnu': 0.06}
 def get_obs_pk_raw(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
-                   kwinmin=0.0, kwinmax=0.5, ell=[0, 2], ellwin=[0, 2, 4], nocov=False, mocktype_cov='holi-v3-altmtl', dk=0.005):
-    
+                   kwinmin=0.0, kwinmax=0.5, ell=[0, 2], ellwin=[0, 2, 4], nocov=False, mocktype_cov='holi-v3-altmtl', dk=0.005,
+                   use_Mpc=True):
+
     tracer_str = tracer if not 'ELG' in tracer else 'ELG_LOPnotqso'
     pk = get_mean_pk(tracer_str, zrange, region, mocktype, dk=dk)
     pk = pk.get(ells=ell)
@@ -254,12 +255,13 @@ def get_obs_pk_raw(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
 
     obs = PowerSpectrumMultipoles(k, pell_list, ell=ell, cov=cov, nbar=nbar,
                                   cosmo_fid=cosmo_fid | {'z': zeff}, kmin=kmin, kmax=kmax,
-                                  wmat=win, kwin=kwin, ellwin=ellwin, nmocks_cov=nmocks)
+                                  wmat=win, kwin=kwin, ellwin=ellwin, nmocks_cov=nmocks, save_Mpc_units=use_Mpc)
     return obs
 
 def get_obs_pk_cached(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
                      kwinmin=0.0, kwinmax=0.5, ell=[0, 2], ellwin=[0, 2, 4], nocov=False, mocktype_cov='holi-v3-altmtl', dk=0.005,
-                     outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/'):
+                     outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/',
+                     use_Mpc=True):
     label = tracer_labels[tracer][zrange]
     outdir = Path(outdir)
     fn_mean = get_fn(outdir, 'pk', mocktype, label, region, dkP=dk)
@@ -300,26 +302,29 @@ def get_obs_pk_cached(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
 
     obs = PowerSpectrumMultipoles(k, pell_list, ell=ell, cov=cov, nbar=nbar,
                                   cosmo_fid=cosmo_fid | {'z': zeff}, kmin=kmin, kmax=kmax,
-                                  wmat=win, kwin=kwin, ellwin=ellwin, kwinmin=kwinmin, kwinmax=kwinmax, nmocks_cov=n_mocks_cov)
+                                  wmat=win, kwin=kwin, ellwin=ellwin, kwinmin=kwinmin, kwinmax=kwinmax, nmocks_cov=n_mocks_cov,
+                                  save_Mpc_units=use_Mpc)
     return obs
 
 def get_obs_pk(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
                kwinmin=0.0, kwinmax=0.5, ell=[0, 2], ellwin=[0, 2, 4], nocov=False, mocktype_cov='holi-v3-altmtl', dk=0.005,
-               cached=True, outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/'):
+               cached=True, outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/',
+               use_Mpc=True):
     if cached:
         return get_obs_pk_cached(tracer, zrange, region, mocktype, kmin=kmin, kmax=kmax,
                                  kwinmin=kwinmin, kwinmax=kwinmax, ell=ell, ellwin=ellwin,
-                                 nocov=nocov, mocktype_cov=mocktype_cov, dk=dk, outdir=outdir)
+                                 nocov=nocov, mocktype_cov=mocktype_cov, dk=dk, outdir=outdir, use_Mpc=use_Mpc)
     else:
         return get_obs_pk_raw(tracer, zrange, region, mocktype, kmin=kmin, kmax=kmax,
                               kwinmin=kwinmin, kwinmax=kwinmax, ell=ell, ellwin=ellwin,
-                              nocov=nocov, mocktype_cov=mocktype_cov, dk=dk)
+                              nocov=nocov, mocktype_cov=mocktype_cov, dk=dk, use_Mpc=use_Mpc)
 
 def get_obs_bk_cached(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
-                     kwinmin=0.0, kwinmax=0.5, ell=[(0, 0, 0), (2, 0, 2)], 
-                     ellwin=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)], 
+                     kwinmin=0.0, kwinmax=0.5, ell=[(0, 0, 0), (2, 0, 2)],
+                     ellwin=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)],
                      nocov=False, mocktype_cov='holi-v3-altmtl', dk=0.005, slice_winB=None,
-                     outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/'):
+                     outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/',
+                     use_Mpc=True):
     label = tracer_labels[tracer][zrange]
     outdir = Path(outdir)
     fn_mean = get_fn(outdir, 'bk', mocktype, label, region, dkP=None, dkB=dk)
@@ -344,7 +349,8 @@ def get_obs_bk_cached(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
 
     obs = BispectrumSugiyamaMultipoles(k1k2, bell_list, ell=ell, cov=cov,
                                        cosmo_fid= cosmo_fid | {'z': zeff}, kmin=kmin, kmax=kmax,
-                                       wmat=win, pairwin=kwin, ellwin=ellwin, kwinmin=kwinmin, kwinmax=kwinmax)
+                                       wmat=win, pairwin=kwin, ellwin=ellwin, kwinmin=kwinmin, kwinmax=kwinmax,
+                                       save_Mpc_units=use_Mpc)
     return obs
 
 
@@ -352,14 +358,15 @@ def get_obs_pk_bk_cached(tracer, zrange, region, mocktype, kminP=0.01, kmaxP=0.3
                             kwinminP=0.0, kwinmaxP=0.5, ellwinP=[0, 2, 4], kminB=0.01, kmaxB=0.2,
                             kwinminB=0.0, kwinmaxB=0.5, ellwinB=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)],
                             mocktype_cov='holi-v3-altmtl', dkP=0.005, dkB=0.005, slice_winB_theory=2,
-                            outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/'):
+                            outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/',
+                            use_Mpc=True):
     obs_pk = get_obs_pk_cached(tracer, zrange, region, mocktype, kmin=kminP, kmax=kmaxP,
                             kwinmin=kwinminP, kwinmax=kwinmaxP, ell=ellP,ellwin=ellwinP,
-                            nocov=True, mocktype_cov=mocktype_cov, dk=dkP, outdir=outdir)
+                            nocov=True, mocktype_cov=mocktype_cov, dk=dkP, outdir=outdir, use_Mpc=use_Mpc)
     obs_bk = get_obs_bk_cached(tracer, zrange, region, mocktype, kmin=kminB, kmax=kmaxB,
                             kwinmin=kwinminB, kwinmax=kwinmaxB, ell=ellB, ellwin=ellwinB,
                             nocov=True, mocktype_cov=mocktype_cov, dk=dkB,
-                            slice_winB=slice_winB_theory, outdir=outdir)
+                            slice_winB=slice_winB_theory, outdir=outdir, use_Mpc=use_Mpc)
 
     outdir = Path(outdir)
     fn_cov_ = get_fn(outdir, 'cov_pk_bk', mocktype_cov, tracer_labels[tracer][zrange], region, dkP=dkP, dkB=dkB, n_mocks_cov='*')
@@ -400,14 +407,18 @@ def get_obs_pk_bk_cached(tracer, zrange, region, mocktype, kminP=0.01, kmaxP=0.3
 
     cov = cut_cov(cov, x=x, ell=ell, ell_select=ellselect, xmin=xmin, xmax=xmax)
 
-    obs = JointObservable(obs_pk, obs_bk, cov=cov, nmocks_cov=n_mocks_cov)
+    # The raw covariance loaded from disk is always in h-units; whether it gets
+    # converted to Mpc units is now decided by JointObservable itself, based on
+    # obs_pk/obs_bk's own Mpc_units setting (i.e. use_Mpc above).
+    obs = JointObservable(obs_pk, obs_bk, cov=cov, nmocks_cov=n_mocks_cov, cov_input_Mpc_units=False)
     return obs
 
 def get_obs_pk_bk(tracer, zrange, region, mocktype, kminP=0.01, kmaxP=0.3, ellP=[0, 2], ellB=[(0, 0, 0), (2, 0, 2)],
                     kwinminP=0.0, kwinmaxP=0.5, ellwinP=[0, 2, 4], kminB=0.01, kmaxB=0.2,
                     kwinminB=0.0, kwinmaxB=0.5, ellwinB=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)],
                     mocktype_cov='holi-v3-altmtl', dkP=0.005, dkB=0.005, slice_winB_theory=2,
-                    cached=True, outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/'):
+                    cached=True, outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/',
+                    use_Mpc=True):
     if cached:
         return get_obs_pk_bk_cached(tracer, zrange, region, mocktype, kminP=kminP, kmaxP=kmaxP,
                                     ellP=ellP, ellB=ellB,
@@ -416,7 +427,7 @@ def get_obs_pk_bk(tracer, zrange, region, mocktype, kminP=0.01, kmaxP=0.3, ellP=
                                     kwinminB=kwinminB, kwinmaxB=kwinmaxB, ellwinB=ellwinB,
                                     mocktype_cov=mocktype_cov, dkP=dkP, dkB=dkB,
                                     slice_winB_theory=slice_winB_theory,
-                                    outdir=outdir)
+                                    outdir=outdir, use_Mpc=use_Mpc)
     else:
         raise NotImplementedError("Non-cached version of get_obs_pk_bk not implemented yet.")
     

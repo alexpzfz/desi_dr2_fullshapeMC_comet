@@ -5,12 +5,16 @@
 #SBATCH --constraint=cpu
 #SBATCH --job-name=mc2f
 #SBATCH --account=desi
+#SBATCH --output=/global/u2/a/alexpzfz/desi_dr2_fullshapeMC_comet/outputs/logs/%x_%j.out
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Hardcoded (not derived from BASH_SOURCE): Slurm copies this script into its
+# spool dir before running it, so BASH_SOURCE points at the spool copy on the
+# compute node, not this file's real location -- that broke src/ resolution.
+REPO_ROOT="/global/u2/a/alexpzfz/desi_dr2_fullshapeMC_comet"
 
 # Map each array index to one tracer/z bin.
-#zranges=("LRG 0.4 0.6" "LRG 0.6 0.8" "LRG 0.8 1.1" "ELG_LOP 0.8 1.1" "ELG_LOP 1.1 1.6" "QSO 0.8 2.1")
-tracer_labels=("LRG1" "LRG2" "LRG3" "ELG1" "ELG2" "QSO")
+#zranges=("BGS 0.1 0.4" "LRG 0.4 0.6" "LRG 0.6 0.8" "LRG 0.8 1.1" "ELG_LOP 0.8 1.1" "ELG_LOP 1.1 1.6" "QSO 0.8 2.1")
+tracer_labels=("BGS" "LRG1" "LRG2" "LRG3" "ELG1" "ELG2" "QSO")
 
 # Power spectrum settings
 dkP="0.005"
@@ -39,6 +43,8 @@ freedom='interm'
 free_Mnu=''
 region='GCcomb'
 de_model='--de_model lambda'
+mpc_h=''            # set to '--mpc_h' to run in Mpc/h units (switches reparam to sigma8) instead of Mpc
+avirB_free=''        # set to '--avirB_free' to sample avirB freely instead of tying it to avir; only applies with --bispec
 
 print_usage() {
         script_name=$(basename "$0")
@@ -53,17 +59,20 @@ Important:
 Modes:
     Array mode: Each array task fits one tracer independently
       - Must specify --array and --cpus-per-task in sbatch options
+      - tracer_labels=(${tracer_labels[@]}), so --array=0-$((${#tracer_labels[@]} - 1)) covers all of them
     Joint mode: Single job fits all tracers together (use --joint flag)
-      - Defaults to 48 cpus-per-task for all 6 tracers
+      - Defaults to $((8 * ${#tracer_labels[@]})) cpus-per-task for all ${#tracer_labels[@]} tracers
 
 Examples:
     Array mode (fits one tracer per task):
-      sbatch --array=0-5 --cpus-per-task=8 $script_name -- --kmaxP 0.30 0.20
-      sbatch --array=2 --cpus-per-task=8 $script_name -- --bispec --kmaxB 0.18 0.14
-    
+      sbatch --array=0-6 --cpus-per-task=8 $script_name -- --kmaxP 0.30 0.20
+      sbatch --array=3 --cpus-per-task=8 $script_name -- --bispec --kmaxB 0.18 0.14
+      sbatch --array=0-6 --cpus-per-task=8 $script_name -- --mpc_h
+      sbatch --array=3 --cpus-per-task=8 $script_name -- --bispec --avirB_free
+
     Joint mode (all tracers in one job):
-      sbatch --cpus-per-task=48 $script_name -- --joint --kmaxP 0.30 0.20
-      sbatch --cpus-per-task=48 $script_name -- --joint --bispec
+      sbatch --cpus-per-task=56 $script_name -- --joint --kmaxP 0.30 0.20
+      sbatch --cpus-per-task=56 $script_name -- --joint --bispec
 EOF
 }
 
@@ -93,7 +102,7 @@ done
 
 # Set default cpus based on mode if not specified by user
 if [ "$joint_mode" = true ]; then
-    default_cpus=48
+    default_cpus=$((8 * ${#tracer_labels[@]}))
 else
     default_cpus=8
 fi
@@ -137,13 +146,14 @@ if [ "$has_bispec" = true ]; then
         --ellwinB $ellwinB
         --kwinminB $kwinminB
         --kwinmaxB $kwinmaxB
+        $avirB_free
     )
 fi
 
 
 # Keep user args from leaking into the sourced environment script.
 set --
-#source /global/common/software/desi/users/adematti/cosmodesi_environment.sh
+#source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main
 export OMP_NUM_THREADS=1
 
 # Build the command based on mode
@@ -162,7 +172,7 @@ if [ "$joint_mode" = true ]; then
         --kwinmaxP $kwinmaxP \
         --freedom "$freedom" \
         --dkP $dkP \
-        $de_model $free_Mnu \
+        $de_model $free_Mnu $mpc_h \
         ${bispec_defaults[@]} "${forwarded_user_args[@]}"
 else
     # Array mode: single tracer per task
@@ -177,6 +187,6 @@ else
         --kwinmaxP $kwinmaxP \
         --freedom "$freedom" \
         --dkP $dkP \
-        $de_model $free_Mnu \
+        $de_model $free_Mnu $mpc_h \
         ${bispec_defaults[@]} "${forwarded_user_args[@]}"
 fi

@@ -36,7 +36,7 @@ def _fmt_float(x):
 
 def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, kmaxB=None,
            de_model='lambda', reparam_option='full', free_Mnu=False, outdir=str(env.CHAINS_DIR), extra=None,
-           counterterm_basis='DESIct'):
+           counterterm_basis='DESIct', avirB_free=False, use_Mpc=True):
 
     if not isinstance(tracer_label, list):
         tracer_label = [tracer_label] 
@@ -64,8 +64,12 @@ def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, km
             fn += f'_dk{_fmt_float(dkB)}'
         if kmaxB is not None:
             fn += f'_kmax{kmaxB_str}'
+        if avirB_free:
+            fn += '_avirBfree'
     if counterterm_basis != 'DESIct':
         fn += f'_ct{counterterm_basis}'
+    if not use_Mpc:
+        fn += '_Mpch'
     if extra is not None:
         fn += f'_{extra}'
     return fn
@@ -118,7 +122,8 @@ def build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array):
     pars = get_pars(bispec=args.bispec, de_model=args.de_model, reparam_option=args.reparam,
                      freedom=args.freedom, free_Mnu=args.free_Mnu,
                      b1_ref=b1_ref, sigmaR_ref=sigmaR_ref, sigma1_eff=sigma1_eff, fsat=fsat,
-                     z_array=z_array, counterterm_basis=args.counterterm_basis)
+                     z_array=z_array, counterterm_basis=args.counterterm_basis,
+                     avirB_free=args.avirB_free, use_Mpc=not args.mpc_h)
     if args.bispec:
         pars.emu.bispec_kwargs['sugiyama']['quad_deg'] = (5, 12, 5)
     pars.emu.use_interp_kwin = True
@@ -148,6 +153,7 @@ if __name__ == "__main__":
     parser.add_argument('--kwinmaxP', type=float, default=0.5, nargs='*')
     parser.add_argument('--dkP', type=float, default=0.005)
     parser.add_argument('--bispec', action='store_true')
+    parser.add_argument('--avirB_free', action='store_true', help="Sample avirB as a free parameter instead of tying it to avir (the default when --bispec is set).")
     parser.add_argument('--ellB', type=_parse_tuple_ell, nargs='*', default=[(0, 0, 0), (2, 0, 0)])
     parser.add_argument('--kminB', type=float, default=0.01, nargs='*')
     parser.add_argument('--kmaxB', type=float, default=0.2, nargs='*')
@@ -160,6 +166,7 @@ if __name__ == "__main__":
     parser.add_argument('--counterterm_basis', type=str, default='DESIct', choices=['DESIct', 'Comet'])
     parser.add_argument('--freedom', type=str, default='max', choices=['min', 'max', 'interm'])
     parser.add_argument('--free_Mnu', action='store_true')
+    parser.add_argument('--mpc_h', action='store_true', help="Run the fit in Mpc/h units instead of Mpc. Switches the reparametrization to use sigma8 instead of sigma12.")
     parser.add_argument('--outdir', type=str, default=str(env.CHAINS_DIR))
     parser.add_argument('--n_live', type=int, default=2000)
     parser.add_argument('--extra', type=str, default=None, help="Extra string to add to output filename for uniqueness (e.g. to distinguish different sampler settings).")
@@ -174,8 +181,8 @@ if __name__ == "__main__":
     print(f"Fitting tracer(s) {args.tracer_label} in region {args.region} with mock type {args.mocktype}")
     print(f"Power spectrum settings: ellP={args.ellP}, kminP={args.kminP}, kmaxP={args.kmaxP}, ellwinP={args.ellwinP}, kwinminP={args.kwinminP}, kwinmaxP={args.kwinmaxP}, dkP={args.dkP}")
     if args.bispec:
-        print(f"Bispectrum settings: ellB={args.ellB}, kminB={args.kminB}, kmaxB={args.kmaxB}, ellwinB={args.ellwinB}, kwinminB={args.kwinminB}, kwinmaxB={args.kwinmaxB}, dkB={args.dkB}")
-    print(f"DE model: {args.de_model}, reparametrization: {args.reparam}, freedom: {args.freedom}, free_Mnu: {args.free_Mnu}, counterterm_basis: {args.counterterm_basis}")
+        print(f"Bispectrum settings: ellB={args.ellB}, kminB={args.kminB}, kmaxB={args.kmaxB}, ellwinB={args.ellwinB}, kwinminB={args.kwinminB}, kwinmaxB={args.kwinmaxB}, dkB={args.dkB}, avirB_free={args.avirB_free}")
+    print(f"DE model: {args.de_model}, reparametrization: {args.reparam}, freedom: {args.freedom}, free_Mnu: {args.free_Mnu}, counterterm_basis: {args.counterterm_basis}, units: {'Mpc/h' if args.mpc_h else 'Mpc'}")
 
 
     tracer_list = []
@@ -190,16 +197,23 @@ if __name__ == "__main__":
     # Build one observable per z-bin for simultaneous fit
     observables = []
     for tracer_i, zr in zip(tracer_list, zrange_list):
-        if not args.bispec:
-            obs_i = get_obs_pk(tracer=tracer_i, zrange=zr, region=args.region, mocktype=args.mocktype,
-                               ell=args.ellP, kmin=args.kminP, kmax=args.kmaxP, ellwin=args.ellwinP,
-                               kwinmin=args.kwinminP, kwinmax=args.kwinmaxP, dk=args.dkP)
+        if tracer_i == 'BGS':
+            mocktype = 'abacus-2ndgen-dr2-altmtl'
+            mocktype_cov = 'holi-bgs-altmtl'
         else:
-            obs_i = get_obs_pk_bk(tracer=tracer_i, zrange=zr, region=args.region, mocktype=args.mocktype,
+            mocktype = 'abacus-hf-dr2-v2-altmtl'
+            mocktype_cov = 'holi-v3-altmtl'
+        if not args.bispec:
+            obs_i = get_obs_pk(tracer=tracer_i, zrange=zr, region=args.region, mocktype=mocktype, mocktype_cov=mocktype_cov,
+                               ell=args.ellP, kmin=args.kminP, kmax=args.kmaxP, ellwin=args.ellwinP,
+                               kwinmin=args.kwinminP, kwinmax=args.kwinmaxP, dk=args.dkP, use_Mpc=not args.mpc_h)
+        else:
+            obs_i = get_obs_pk_bk(tracer=tracer_i, zrange=zr, region=args.region, mocktype=mocktype, mocktype_cov=mocktype_cov,
                                         ellP=args.ellP, kminP=args.kminP, kmaxP=args.kmaxP, ellwinP=args.ellwinP,
                                         kwinminP=args.kwinminP, kwinmaxP=args.kwinmaxP, dkP=args.dkP,
                                         ellB=args.ellB, kminB=args.kminB, kmaxB=args.kmaxB, ellwinB=args.ellwinB,
-                                        kwinminB=args.kwinminB, kwinmaxB=args.kwinmaxB, dkB=args.dkB, slice_winB_theory=None)
+                                        kwinminB=args.kwinminB, kwinmaxB=args.kwinmaxB, dkB=args.dkB, slice_winB_theory=None,
+                                        use_Mpc=not args.mpc_h)
         observables.append(obs_i)
 
 
@@ -233,7 +247,7 @@ if __name__ == "__main__":
     fn = get_fn(tracer_label=args.tracer_label, region=args.region,  freedom=args.freedom, dkP=args.dkP, kmaxP=args.kmaxP,
                 bispec=args.bispec, dkB=args.dkB, kmaxB=args.kmaxB,
                 de_model=args.de_model, reparam_option=args.reparam, free_Mnu=args.free_Mnu, outdir=args.outdir, extra=args.extra,
-                counterterm_basis=args.counterterm_basis)
+                counterterm_basis=args.counterterm_basis, avirB_free=args.avirB_free, use_Mpc=not args.mpc_h)
     if args.minimize:
         # Stage 1: minimize with analytical marginalisation (AM) of the
         # linear nuisance parameters, and save the resulting MAP.
