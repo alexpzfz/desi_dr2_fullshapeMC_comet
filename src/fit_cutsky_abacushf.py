@@ -17,6 +17,7 @@ from samplers import NautilusSampler, MinuitMinimizer
 from theory import COMET
 from read_data import get_obs_pk, get_obs_pk_bk
 from priors_mc import get_pars
+import plot_utils as pu
 
 
 
@@ -28,6 +29,11 @@ tracer_label_dict = {'BGS': {'tracer': 'BGS', 'zrange': (0.1, 0.4)},
                      'ELG1': {'tracer': 'ELG', 'zrange': (0.8, 1.1)},
                      'ELG2': {'tracer': 'ELG', 'zrange': (1.1, 1.6)},
                      'QSO': {'tracer': 'QSO', 'zrange': (0.8, 2.1)}}
+
+zsnap_dict = {'BGS': {(0.1, 0.4): 0.300},
+              'LRG': {(0.4, 0.6): 0.500, (0.6, 0.8): 0.725, (0.8, 1.1): 0.950},
+              'ELG': {(0.8, 1.1): 0.950, (1.1, 1.6): 1.475},
+              'QSO': {(0.8, 2.1): 1.550}}
 
 
 def _fmt_float(x):
@@ -125,9 +131,23 @@ def build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array):
                      z_array=z_array, counterterm_basis=args.counterterm_basis,
                      avirB_free=args.avirB_free, use_Mpc=not args.mpc_h)
     if args.bispec:
-        pars.emu.bispec_kwargs['sugiyama']['quad_deg'] = (5, 12, 5)
+        pars.emu.bispec_kwargs['sugiyama']['quad_deg'] = (7, 16, 5)
+        pars.emu.bispec_kwargs['sugiyama']['mu12_transform'] = 'k3'
     pars.emu.use_interp_kwin = True
     return pars
+
+
+def get_cosmo_params_to_plot(args):
+    """Names of the sampled/exported cosmological parameters for this fit,
+    in the order they should appear in the triangle plot."""
+    params = ['wb', 'wc', 'h', 'ns', 'log10As']
+    if args.de_model in ('w0', 'w0wa'):
+        params.append('w0')
+    if args.de_model == 'w0wa':
+        params.append('wa')
+    if args.free_Mnu:
+        params.append('Mnu')
+    return params
 
 
 def _parse_tuple_ell(ell_str):
@@ -173,6 +193,8 @@ if __name__ == "__main__":
     parser.add_argument('--minimize', action='store_true', help="Run an iMinuit MIGRAD minimization instead of Nautilus nested sampling.")
     parser.add_argument('--hesse', action='store_true', help="Run HESSE after MIGRAD to get the covariance matrix. Only used with --minimize.")
     parser.add_argument('--seed_init', type=int, default=None, help="Random seed for drawing the Minuit starting point from the priors. Only used with --minimize.")
+    parser.add_argument('--plot_contours', action='store_true', help="After the Nautilus chain finishes, plot the triangle/contour plot for the cosmological parameters and save it to --plot_dir. Not used with --minimize.")
+    parser.add_argument('--plot_dir', type=str, default=str(env.PLOTS_DIR_CUTSKY_ABACUSHF), help="Directory to store the contour plot in, when --plot_contours is set.")
 
     args = parser.parse_args()
 
@@ -214,6 +236,7 @@ if __name__ == "__main__":
                                         ellB=args.ellB, kminB=args.kminB, kmaxB=args.kmaxB, ellwinB=args.ellwinB,
                                         kwinminB=args.kwinminB, kwinmaxB=args.kwinmaxB, dkB=args.dkB, slice_winB_theory=None,
                                         use_Mpc=not args.mpc_h)
+        obs_i.cosmo_fid['z'] = zsnap_dict[tracer_i][zr]
         observables.append(obs_i)
 
 
@@ -226,9 +249,9 @@ if __name__ == "__main__":
     observables = [observables[i] for i in sort_idx]
 
     if args.counterterm_basis == 'DESIct':
-        am_params = ['btd_r', 'a0_r', 'a2_r', 'a4_r', 'NP0_r', 'NP20_r', 'NP22_r']
+        am_params = ['btd_r', 'a0_r', 'a2_r', 'NP0_r', 'NP20_r', 'NP22_r']
     elif args.counterterm_basis == 'Comet':
-        am_params = ['btd_r', 'c0_r', 'c2_r', 'c4_r', 'NP0_r', 'NP20_r', 'NP22_r']
+        am_params = ['btd_r', 'c0_r', 'c2_r', 'NP0_r', 'NP20_r', 'NP22_r']
     if args.bispec:
         am_params += ['NB0_r', 'MB0_r']
 
@@ -310,6 +333,29 @@ if __name__ == "__main__":
                          'discard_exploration': True, 'elapsed_minutes': (t1 - t0) / 60}
         sampler.save(fn, metadata=run_metadata)
         print(f"Chain saved to {fn}")
+
+        if args.plot_contours:
+            print("Plotting contours for the cosmological parameters...")
+            try:
+                samples = pu.get_samples(fn + '.h5')
+                cosmo_params = get_cosmo_params_to_plot(args)
+                try:
+                    g = pu.plot_triangle(samples, params_to_plot=cosmo_params, filled=True)
+                except (RuntimeError, FileNotFoundError):
+                    # plot_utils sets rcParams['text.usetex'] = True at import
+                    # time, which needs a working LaTeX install; fall back to
+                    # matplotlib's own mathtext if that's not available here.
+                    plt.rc('text', usetex=False)
+                    g = pu.plot_triangle(samples, params_to_plot=cosmo_params, filled=True)
+                os.makedirs(args.plot_dir, exist_ok=True)
+                plot_fn = os.path.join(args.plot_dir, f"{Path(fn).name}_contours.png")
+                g.fig.savefig(plot_fn, dpi=150, bbox_inches='tight')
+                plt.close(g.fig)
+                print(f"Contour plot saved to {plot_fn}")
+            except Exception as e:
+                # The chain itself is already saved at this point; don't let a
+                # plotting failure look like the whole run failed.
+                print(f"Warning: failed to plot contours ({e}). Chain is still saved at {fn}.")
 
         # clean up
         os.remove(fn_snap)
