@@ -81,15 +81,15 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
     pars = Params(emu, coev_params=coev_params, z_array=z_array)
     #pars = Params(emu, coev_params=coev_params)
     pars.update_parameter('wb', 0.02237, prior=(0.02237, 0.00055), prior_type='gaussian', fixed=False)
-    if freedom == 'interm':
-        pars.update_parameter('wb', 0.02237, prior=(0.02237, 0.00037), prior_type='gaussian', fixed=False)
+    #if freedom == 'interm':
+    #    pars.update_parameter('wb', 0.02237, prior=(0.02237, 0.00037), prior_type='gaussian', fixed=False)
     #pars.update_parameter('wc', 0.1200, prior=(0.085, 0.155), prior_type='uniform', fixed=False)
     pars.update_parameter('wc', 0.1200, prior=(0.08, 0.16), prior_type='uniform', fixed=False)
     #pars.update_parameter('As', 2.0830, prior=(1.055, 3.17), prior_type='uniform', fixed=False)
     pars.update_parameter('h', 0.6736, prior=(0.5, 1.0), prior_type='uniform', fixed=False)
     pars.update_parameter('ns', 0.9649, prior=(0.9649, ns_times_Planck * 0.0042), prior_type='gaussian', fixed=False)
-    if freedom == 'interm':
-        pars.set_and_fix_param('ns', 0.9649)
+    #if freedom == 'interm':
+    #    pars.set_and_fix_param('ns', 0.9649)
     if de_model == 'w0wa':
         pars.update_parameter('w0', -1., prior=(-3., 1.), prior_type='uniform', fixed=False)
         pars.update_parameter('wa', 0., prior=(-3., 2.), prior_type='uniform', fixed=False)
@@ -98,7 +98,7 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
     elif de_model != 'lambda':
         raise ValueError(f"Invalid de_model: {de_model}. Must be one of 'lambda', 'w0', or 'w0wa'.")
     # pars.add_sampled_param("log10As", 3.04, prior=(2.31, 3.5), latex=r"\ln(10^{10} A_s)")
-    pars.add_sampled_param("log10As", 3.04, prior=(2., 4.), latex=r"\ln(10^{10} A_s)")
+    pars.add_sampled_param("log10As", 3.04, prior=(1.61, 3.91), latex=r"\ln(10^{10} A_s)")
     pars.set_derived_param("As", lambda d: np.exp(d["log10As"]) / 1e10 * 1e9, exported=True)     
     
     if free_Mnu:
@@ -146,14 +146,14 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
         subscript = sub_rep + sub_idz
         pars.update_parameter(f'b1{subscript}', 2., prior=(0.1, 8), prior_type='uniform', fixed=False)
         pars.update_parameter(f'b2d{subscript}', 0., prior=(0, 20), prior_type='gaussian', fixed=False)
-        if freedom == 'interm':
-            pars.update_parameter(f'b1{subscript}', 2., prior=(0.1, 4), prior_type='uniform', fixed=False)
-            pars.update_parameter(f'b2d{subscript}', 0., prior=(0, 5), prior_type='gaussian', fixed=False)
+        # if freedom == 'interm':
+        #     pars.update_parameter(f'b1{subscript}', 2., prior=(0.1, 4), prior_type='uniform', fixed=False)
+        #     pars.update_parameter(f'b2d{subscript}', 0., prior=(0, 5), prior_type='gaussian', fixed=False)
         if freedom == 'max':
             pars.update_parameter(f'bk2{subscript}', bK2ref[iz], prior=(bK2ref[iz], 20), prior_type='gaussian', fixed=False)
             pars.update_parameter(f'btd{subscript}', btdref[iz], prior=(btdref[iz], 80), prior_type='gaussian', fixed=False)
         elif freedom == 'interm':
-            pars.update_parameter(f'bk2{subscript}', bK2ref[iz], prior=(bK2ref[iz], 5), prior_type='gaussian', fixed=False)
+            pars.update_parameter(f'bk2{subscript}', bK2ref[iz], prior=(bK2ref[iz], 20.), prior_type='gaussian', fixed=False)
             pars.update_parameter(f'btd{subscript}', btdref[iz], prior=(btdref[iz], 1.), prior_type='gaussian', fixed=False)
 
         pars.update_parameter(f'avir{sub_idz}', 5., prior=(0, 20./hconv), prior_type='uniform', fixed=False)
@@ -164,14 +164,17 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
         if counterterm_basis == 'DESIct':
             pars.update_parameter(f'a0{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
             pars.update_parameter(f'a2{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
-            pars.update_parameter(f'a4{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
-            #pars.set_and_fix_param(f'a4{subscript}', 0.)
-            #if reparam_option is not None:
-            #    pars.set_and_fix_param(f'a4{sub_idz}', 0.)
+            #pars.update_parameter(f'a4{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
+            pars.set_and_fix_param(f'a4{subscript}', 0.)
+            if reparam_option is not None:
+                pars.set_and_fix_param(f'a4{sub_idz}', 0.)
         elif counterterm_basis == 'Comet':
             pars.update_parameter(f'c0{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
             pars.update_parameter(f'c2{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
-            pars.update_parameter(f'c4{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
+            #pars.update_parameter(f'c4{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
+            pars.set_and_fix_param(f'c4{subscript}', 0.)
+            if reparam_option is not None:
+                pars.set_and_fix_param(f'c4{sub_idz}', 0.)
 
         if bispec:
             pars.update_parameter(f'NB0{subscript}', 0., prior=(0, 1.), prior_type='gaussian', fixed=False)
