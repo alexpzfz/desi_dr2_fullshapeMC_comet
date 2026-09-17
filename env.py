@@ -17,6 +17,7 @@ SRC_DIR = REPO_ROOT / "src"
 FULL_SHAPE_WRAP_DIR = Path("/global/u2/a/alexpzfz/full-shape_wrap")
 CHAINS_DIR = REPO_ROOT / "outputs" / "chains"
 PLOTS_DIR_CUTSKY_ABACUSHF = REPO_ROOT / "outputs" / "plots" / "cutsky_abacushf"
+PLOTS_DIR_SCALE_CONFIG = REPO_ROOT / "outputs" / "plots" / "scale_config"
 
 for _p in (SRC_DIR, FULL_SHAPE_WRAP_DIR):
     _p_str = str(_p)

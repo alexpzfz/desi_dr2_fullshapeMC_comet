@@ -178,7 +178,7 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
 
         if bispec:
             pars.update_parameter(f'NB0{subscript}', 0., prior=(0, 1.), prior_type='gaussian', fixed=False)
-            pars.update_parameter(f'MB0{subscript}', 0., prior=(0, 3.), prior_type='gaussian', fixed=False)
+            pars.update_parameter(f'MB0{subscript}', 0., prior=(0, 2.), prior_type='gaussian', fixed=False)
             if avirB_free:
                 pars.update_parameter(f'avirB{sub_idz}', 0., prior=(0, 20./hconv), prior_type='uniform', fixed=False)
             else:

@@ -133,6 +133,7 @@ def build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array):
     if args.bispec:
         pars.emu.bispec_kwargs['sugiyama']['quad_deg'] = (7, 16, 5)
         pars.emu.bispec_kwargs['sugiyama']['mu12_transform'] = 'k3'
+        pars.emu.BispNum.backend = 'jax'
     pars.emu.use_interp_kwin = True
     return pars
 
@@ -164,27 +165,33 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--tracer_label', type=str, default='LRG', nargs='*', help="Tracer label(s) to fit. Should be one of LRG1, LRG2, LRG3, ELG1, ELG2, QSO. If multiple are provided, they will be fit simultaneously with shared cosmological parameters but independent nuisance parameters.")
     parser.add_argument('--region', type=str, default='GCcomb')
-    parser.add_argument('--mocktype', type=str, default='abacus-hf-dr2-v2-altmtl')
+    parser.add_argument('--mocktype', type=str, default=None, help="Override the data mock type. "
+                        "Default: per-tracer (abacus-hf-dr2-v2-altmtl, or abacus-2ndgen-dr2-altmtl for BGS). "
+                        "Set it to fit an alternative data set, e.g. a blinded one.")
+    parser.add_argument('--mocktype_cov', type=str, default=None, help="Override the mock type of the "
+                        "covariance. Default: per-tracer (holi-v3-altmtl, or holi-bgs-altmtl for BGS).")
+    parser.add_argument('--data_dir', type=str, default=None, help="Directory holding the cached data, "
+                        "covariance and window files. Default: the location read_data.py points at.")
     parser.add_argument('--ellP', type=int, nargs='*', default=[0, 2])
     parser.add_argument('--kminP', type=float, default=0.02, nargs='*')
     parser.add_argument('--kmaxP', type=float, default=0.3, nargs='*')
     parser.add_argument('--ellwinP', type=int, nargs='*', default=[0, 2, 4])
-    parser.add_argument('--kwinminP', type=float, default=0.0, nargs='*')
+    parser.add_argument('--kwinminP', type=float, default=0.0015, nargs='*')
     parser.add_argument('--kwinmaxP', type=float, default=0.5, nargs='*')
     parser.add_argument('--dkP', type=float, default=0.005)
     parser.add_argument('--bispec', action='store_true')
     parser.add_argument('--avirB_free', action='store_true', help="Sample avirB as a free parameter instead of tying it to avir (the default when --bispec is set).")
-    parser.add_argument('--ellB', type=_parse_tuple_ell, nargs='*', default=[(0, 0, 0), (2, 0, 0)])
-    parser.add_argument('--kminB', type=float, default=0.01, nargs='*')
+    parser.add_argument('--ellB', type=_parse_tuple_ell, nargs='*', default=[(0, 0, 0), (2, 0, 2)])
+    parser.add_argument('--kminB', type=float, default=0.02, nargs='*')
     parser.add_argument('--kmaxB', type=float, default=0.2, nargs='*')
-    parser.add_argument('--ellwinB', type=_parse_tuple_ell, nargs='*', default=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)])
-    parser.add_argument('--kwinminB', type=float, default=0.005, nargs='*')
+    parser.add_argument('--ellwinB', type=_parse_tuple_ell, nargs='*', default=[(0, 0, 0), (0, 2, 2)])
+    parser.add_argument('--kwinminB', type=float, default=0.0015, nargs='*')
     parser.add_argument('--kwinmaxB', type=float, default=0.3, nargs='*')
-    parser.add_argument('--dkB', type=float, default=0.01)
+    parser.add_argument('--dkB', type=float, default=0.005)
     parser.add_argument('--reparam', type=str, default='full', choices=['full', 'hybrid', 'none'])
     parser.add_argument('--de_model', type=str, default='lambda', choices=['lambda', 'w0wa', 'w0'])
     parser.add_argument('--counterterm_basis', type=str, default='DESIct', choices=['DESIct', 'Comet'])
-    parser.add_argument('--freedom', type=str, default='max', choices=['min', 'max', 'interm'])
+    parser.add_argument('--freedom', type=str, default='interm', choices=['min', 'max', 'interm'])
     parser.add_argument('--free_Mnu', action='store_true')
     parser.add_argument('--mpc_h', action='store_true', help="Run the fit in Mpc/h units instead of Mpc. Switches the reparametrization to use sigma8 instead of sigma12.")
     parser.add_argument('--outdir', type=str, default=str(env.CHAINS_DIR))
@@ -200,7 +207,9 @@ if __name__ == "__main__":
 
     os.environ['OMP_NUM_THREADS'] = '1'  # to avoid numpy multithreading issues with multiprocessing
 
-    print(f"Fitting tracer(s) {args.tracer_label} in region {args.region} with mock type {args.mocktype}")
+    print(f"Fitting tracer(s) {args.tracer_label} in region {args.region}")
+    if args.mocktype or args.mocktype_cov or args.data_dir:
+        print(f"Data overrides: mocktype={args.mocktype}, mocktype_cov={args.mocktype_cov}, data_dir={args.data_dir}")
     print(f"Power spectrum settings: ellP={args.ellP}, kminP={args.kminP}, kmaxP={args.kmaxP}, ellwinP={args.ellwinP}, kwinminP={args.kwinminP}, kwinmaxP={args.kwinmaxP}, dkP={args.dkP}")
     if args.bispec:
         print(f"Bispectrum settings: ellB={args.ellB}, kminB={args.kminB}, kmaxB={args.kmaxB}, ellwinB={args.ellwinB}, kwinminB={args.kwinminB}, kwinmaxB={args.kwinmaxB}, dkB={args.dkB}, avirB_free={args.avirB_free}")
@@ -218,6 +227,9 @@ if __name__ == "__main__":
 
     # Build one observable per z-bin for simultaneous fit
     observables = []
+    mocktypes_used = []
+    mocktypes_cov_used = []
+    data_dir_kw = {} if args.data_dir is None else {'outdir': args.data_dir}
     for tracer_i, zr in zip(tracer_list, zrange_list):
         if tracer_i == 'BGS':
             mocktype = 'abacus-2ndgen-dr2-altmtl'
@@ -225,18 +237,26 @@ if __name__ == "__main__":
         else:
             mocktype = 'abacus-hf-dr2-v2-altmtl'
             mocktype_cov = 'holi-v3-altmtl'
+        # --mocktype / --mocktype_cov override the per-tracer defaults above
+        mocktype = args.mocktype or mocktype
+        mocktype_cov = args.mocktype_cov or mocktype_cov
+        mocktypes_used.append(mocktype)
+        mocktypes_cov_used.append(mocktype_cov)
         if not args.bispec:
             obs_i = get_obs_pk(tracer=tracer_i, zrange=zr, region=args.region, mocktype=mocktype, mocktype_cov=mocktype_cov,
                                ell=args.ellP, kmin=args.kminP, kmax=args.kmaxP, ellwin=args.ellwinP,
-                               kwinmin=args.kwinminP, kwinmax=args.kwinmaxP, dk=args.dkP, use_Mpc=not args.mpc_h)
+                               kwinmin=args.kwinminP, kwinmax=args.kwinmaxP, dk=args.dkP, use_Mpc=not args.mpc_h,
+                               **data_dir_kw)
         else:
             obs_i = get_obs_pk_bk(tracer=tracer_i, zrange=zr, region=args.region, mocktype=mocktype, mocktype_cov=mocktype_cov,
                                         ellP=args.ellP, kminP=args.kminP, kmaxP=args.kmaxP, ellwinP=args.ellwinP,
                                         kwinminP=args.kwinminP, kwinmaxP=args.kwinmaxP, dkP=args.dkP,
                                         ellB=args.ellB, kminB=args.kminB, kmaxB=args.kmaxB, ellwinB=args.ellwinB,
-                                        kwinminB=args.kwinminB, kwinmaxB=args.kwinmaxB, dkB=args.dkB, slice_winB_theory=None,
-                                        use_Mpc=not args.mpc_h)
+                                        kwinminB=args.kwinminB, kwinmaxB=args.kwinmaxB, dkB=args.dkB, slice_winB_theory=2,
+                                        use_Mpc=not args.mpc_h, **data_dir_kw)
+        print(f"Effective redshift from geometry: {obs_i.cosmo_fid['z']:.3f}, from zrange: {zr}")
         obs_i.cosmo_fid['z'] = zsnap_dict[tracer_i][zr]
+        print(f'Switched effective redshift to zsnap: {obs_i.cosmo_fid["z"]:.3f}')
         observables.append(obs_i)
 
 
@@ -286,7 +306,8 @@ if __name__ == "__main__":
         best_fit_am, uncertainties_am = minimizer.get_map(return_am=True)
 
         fn_minuit_am = fn + '_minuit_am'
-        run_metadata_am = {**vars(args), 'elapsed_minutes': (t1 - t0) / 60, 'stage': 'analytical_marginalisation'}
+        run_metadata_am = {**vars(args), 'mocktypes_used': mocktypes_used, 'mocktypes_cov_used': mocktypes_cov_used,
+                           'elapsed_minutes': (t1 - t0) / 60, 'stage': 'analytical_marginalisation'}
         minimizer.save(fn_minuit_am, best_fit=best_fit_am, uncertainties=uncertainties_am, metadata=run_metadata_am)
         print(f"AM best-fit result saved to {fn_minuit_am}")
 
@@ -308,7 +329,8 @@ if __name__ == "__main__":
         print(f"Full-likelihood minimization finished in {(t1-t0)/60:.2f} minutes.")
 
         fn_minuit = fn + '_minuit_full'
-        run_metadata = {**vars(args), 'elapsed_minutes': (t1 - t0) / 60, 'stage': 'full_likelihood',
+        run_metadata = {**vars(args), 'mocktypes_used': mocktypes_used, 'mocktypes_cov_used': mocktypes_cov_used,
+                         'elapsed_minutes': (t1 - t0) / 60, 'stage': 'full_likelihood',
                          'am_map_file': fn_minuit_am}
         minimizer_full.save(fn_minuit, metadata=run_metadata)
         print(f"Full-likelihood best-fit result saved to {fn_minuit}")
@@ -329,7 +351,8 @@ if __name__ == "__main__":
         sampler.sample(verbose=True, discard_exploration=True)
         t1 = time.time()
         print(f"Sampler finished in {(t1-t0)/60:.2f} minutes.")
-        run_metadata = {**vars(args), 'n_threads': n_threads, 'pool_size': n_threads,
+        run_metadata = {**vars(args), 'mocktypes_used': mocktypes_used, 'mocktypes_cov_used': mocktypes_cov_used,
+                         'n_threads': n_threads, 'pool_size': n_threads,
                          'discard_exploration': True, 'elapsed_minutes': (t1 - t0) / 60}
         sampler.save(fn, metadata=run_metadata)
         print(f"Chain saved to {fn}")
@@ -340,13 +363,13 @@ if __name__ == "__main__":
                 samples = pu.get_samples(fn + '.h5')
                 cosmo_params = get_cosmo_params_to_plot(args)
                 try:
-                    g = pu.plot_triangle(samples, params_to_plot=cosmo_params, filled=True)
+                    g = pu.plot_triangle(samples, params_to_plot=cosmo_params, filled=False)
                 except (RuntimeError, FileNotFoundError):
                     # plot_utils sets rcParams['text.usetex'] = True at import
                     # time, which needs a working LaTeX install; fall back to
                     # matplotlib's own mathtext if that's not available here.
                     plt.rc('text', usetex=False)
-                    g = pu.plot_triangle(samples, params_to_plot=cosmo_params, filled=True)
+                    g = pu.plot_triangle(samples, params_to_plot=cosmo_params, filled=False)
                 os.makedirs(args.plot_dir, exist_ok=True)
                 plot_fn = os.path.join(args.plot_dir, f"{Path(fn).name}_contours.png")
                 g.fig.savefig(plot_fn, dpi=150, bbox_inches='tight')

@@ -584,9 +584,3 @@ if __name__ == "__main__":
                         np.savetxt(fn_window_bk_k, k1k2_window)
                     else:
                         print(f"{fn_window_bk} already exists, skipping...")
-    
-
-                
-
-
-

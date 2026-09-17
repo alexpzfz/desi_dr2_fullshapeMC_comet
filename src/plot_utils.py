@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from getdist import plots, MCSamples
+import scipy.stats as stats
 plt.rc('text', usetex=True)
 plt.rc('font', family='serif')
 plt.rc('font', size=12)
@@ -12,6 +13,15 @@ cosmo_dict = {'c000': {'wb': 0.02237, 'wc': 0.1200, 'h': 0.6736, 'As': 2.083, 'n
 cosmo_list = ['c000', 'c001', 'c002', 'c004']
 for c in cosmo_list:
     cosmo_dict[c]['log10As'] = np.log(1e10 * cosmo_dict[c]['As'] * 1e-9)
+
+# True Omega_m/sigma8 for each fiducial cosmology, so that plot_fob_fom (which
+# looks these up from cosmo_dict) also works for the {h, Omega_m, sigma8}
+# parameter space, not just the directly-sampled cosmological parameters.
+from cosmoprimo.fiducial import AbacusSummit as _AbacusSummit
+for c in cosmo_list:
+    _abacus = _AbacusSummit(name=c[1:])
+    cosmo_dict[c]['Omega_m'] = _abacus.get('Omega_m')
+    cosmo_dict[c]['sigma8'] = _abacus.sigma8_cb
 
 colors = {'c000': 'blue', 'c001': 'orange', 'c002': 'green', 'c004': 'red'}
 tracer_colors = {('BGS_ANY-02', (0.1, 0.4)):'yellowgreen','BGS': 'yellowgreen', 'BGS_BRIGHT-21.5': 'yellowgreen', ('BGS_BRIGHT-21.5', (0.1, 0.4)): 'yellowgreen', ('BGS_BRIGHT-21.35', (0.1, 0.4)): 'yellowgreen',
@@ -57,8 +67,16 @@ def correct_labels(names, labels):
             label = labels[i]
         labels[i] = label
     return labels
+
+
+def get_fob_threshold(n_sigma, k_dimensions):
+    # Probability within n-sigma for a 1D Gaussian
+    p = 2 * stats.norm.cdf(n_sigma) - 1
+    # Find the corresponding chi-squared threshold
+    return np.sqrt(stats.chi2.ppf(p, k_dimensions))
+
         
-def get_samples(fn, drop_w0pwag0=False):
+def get_samples(fn, drop_w0pwag0=False, return_attrs=False):
     import h5py
     with h5py.File(fn, 'r') as f:
         samples_ = f['points'][:]
@@ -66,6 +84,7 @@ def get_samples(fn, drop_w0pwag0=False):
         weights = np.exp(f['log_weights'][:])
         names = f['names'].asstr()[:]
         labels = f['latex_names'].asstr()[:]
+        attrs = dict(f.attrs)
     names_list = names.tolist()
     preferred_order = ['wc', 'h', 'log10As', 'w0', 'wa', 'wb', 'ns']
     sorted_indices = np.argsort([preferred_order.index(name) if name in preferred_order else len(preferred_order)+names_list.index(name) for name in names])
@@ -81,10 +100,28 @@ def get_samples(fn, drop_w0pwag0=False):
     labels = labels[sorted_indices]
     labels = correct_labels(names, labels)
 
-
     samples = MCSamples(samples=samples_, loglikes=loglikes, weights=weights, names=names, labels=labels)
+    if return_attrs:
+        return samples, attrs
 
     return samples
+
+def save_samples(samples, fn):
+    """Write an MCSamples object to the same .h5 schema read by get_samples
+    (points/log_weights/log_likelihoods/names/latex_names), so derived
+    parameters added via samples.addDerived (e.g. sigma8, Omega_m) are
+    persisted and the file can be reloaded with get_samples."""
+    import h5py
+    names = samples.getParamNames().list()
+    labels = samples.getParamNames().labels()
+    str_dtype = h5py.string_dtype(encoding='utf-8')
+    with h5py.File(fn, 'w') as f:
+        f.create_dataset('points', data=samples.samples)
+        f.create_dataset('log_weights', data=np.log(samples.weights))
+        f.create_dataset('log_likelihoods', data=samples.loglikes)
+        f.create_dataset('names', data=names, dtype=str_dtype)
+        f.create_dataset('latex_names', data=labels, dtype=str_dtype)
+
 
 def plot_triangle(samples_list, params_to_plot=None, labels=None, width_inch=14, cmap=None, settings_dict=None,
                    legend_fontsize=18, filled=False, cosmo_true='c000', extra_markers=None, **kwargs):
@@ -109,14 +146,62 @@ def plot_triangle(samples_list, params_to_plot=None, labels=None, width_inch=14,
                     legend_labels=labels, **kwargs)
     return g
 
-def plot_fob_fom(samples_lists, params_to_plot, xlabels, samples_labels=None, colors=None, cosmo_true='c000'):
+def _shade_sigma_regions(ax, sigma_levels, k, symmetric=False):
+    """Shade nested n-sigma regions (chi-squared thresholds with k degrees
+    of freedom) from widest/lightest to narrowest/darkest, so the smallest
+    region is drawn last and stays visually distinct on top."""
+    sigma_levels = sorted(sigma_levels)
+    alphas = np.linspace(0.45, 0.12, len(sigma_levels))
+    for n_sigma, alpha in sorted(zip(sigma_levels, alphas), key=lambda t: -t[0]):
+        thr = get_fob_threshold(n_sigma, k)
+        if symmetric:
+            ax.axhspan(-thr, thr, color='grey', alpha=alpha, zorder=0)
+        else:
+            ax.axhspan(0, thr, color='grey', alpha=alpha, zorder=0)
+
+
+def _param_label(samples, param):
+    return samples.getParamNames().labels()[samples.index[param]]
+
+
+def plot_fob_fom(samples_lists, params_to_plot, xlabels, samples_labels=None, colors=None, cosmo_true='c000',
+                  sigma_levels=(0.5, 1.0, 2.0), pull_params=None, bar_width=0.8):
+    """
+    Bar-chart comparison, per tracer (xlabels), of:
+      - FoB and FoM jointly defined on params_to_plot, with the parameters
+        they are defined on shown in the axis label (e.g. FoB(h, Omega_m,
+        sigma_8)); one bar group per entry of samples_lists (e.g. one per
+        unit convention),
+      - the individual pull (theta - theta_true) / sigma_theta for each
+        parameter in pull_params (default: params_to_plot), one panel per
+        parameter.
+
+    samples_lists is a list of groups; each group is a list of MCSamples
+    aligned with xlabels (one sample set per tracer). All shaded regions
+    are the n-sigma thresholds from sigma_levels, using the chi-squared
+    distribution with the relevant number of degrees of freedom (len(
+    params_to_plot) for FoB, 1 for each individual pull panel).
+    """
     if not isinstance(samples_lists[0], list):
         samples_lists = [samples_lists]
-    
-    fig, axes = plt.subplots(2, 1, figsize=(6, 4), sharex=True, layout='constrained')
-    # add shaded region for FoB
-    axes[0].axhspan(0, 1.88, color='grey', alpha=0.4)
-    axes[0].axhspan(0, 2.83, color='grey', alpha=0.2)
+    if pull_params is None:
+        pull_params = params_to_plot
+
+    n_groups = len(samples_lists)
+    n_x = len(xlabels)
+    n_rows = 2 + len(pull_params)
+
+    fig, axes = plt.subplots(n_rows, 1, figsize=(6, 1.5 * n_rows), sharex=True, layout='constrained')
+
+    x = np.arange(n_x)
+    width = bar_width / n_groups
+    offsets = (np.arange(n_groups) - (n_groups - 1) / 2) * width
+
+    k = len(params_to_plot)
+    _shade_sigma_regions(axes[0], sigma_levels, k)
+
+    ref_samples = samples_lists[0][0]
+    joint_label = ', '.join(_param_label(ref_samples, p) for p in params_to_plot)
 
     for i, samples_list in enumerate(samples_lists):
         fob_arr = []
@@ -127,21 +212,48 @@ def plot_fob_fom(samples_lists, params_to_plot, xlabels, samples_labels=None, co
             cov = samples.getCov()[np.ix_(param_indices, param_indices)]
             diff = means - np.array([cosmo_dict[cosmo_true][param] for param in params_to_plot])
             fob = np.sqrt(diff @ np.linalg.inv(cov) @ diff)
-            fom = 1 /np.sqrt(np.linalg.det(cov))
+            fom = 1 / np.sqrt(np.linalg.det(cov))
             fob_arr.append(fob)
             fom_arr.append(fom)
-        axes[0].plot(fob_arr, marker='o', color=colors[i] if colors else None, label=samples_labels[i] if samples_labels else None)
-        axes[1].plot(fom_arr, marker='o', color=colors[i] if colors else None, label=samples_labels[i] if samples_labels else None)
-    
+        color = colors[i] if colors else None
+        label = samples_labels[i] if samples_labels else None
+        axes[0].bar(x + offsets[i], fob_arr, width, color=color, label=label, zorder=2)
+        axes[1].bar(x + offsets[i], fom_arr, width, color=color, label=label, zorder=2)
+
+    # A rotated y-label can't comfortably fit the full parameter list once
+    # there are more than a couple of them (e.g. the 5D w0wa case), so show
+    # it as a compact horizontal title instead and keep the y-label short.
     axes[0].set_ylabel('FoB')
     axes[1].set_ylabel('FoM')
-    
+    axes[0].set_title(r'$\mathrm{FoB}(' + joint_label + r')$', fontsize=13)
+    axes[1].set_title(r'$\mathrm{FoM}(' + joint_label + r')$', fontsize=13)
+
+    for row, param in enumerate(pull_params, start=2):
+        ax = axes[row]
+        _shade_sigma_regions(ax, sigma_levels, k=1)
+        for i, samples_list in enumerate(samples_lists):
+            pulls = []
+            for samples in samples_list:
+                idx = samples.index[param]
+                mean = samples.getMeans()[idx]
+                sigma = np.sqrt(samples.getCov()[idx, idx])
+                true = cosmo_dict[cosmo_true][param]
+                pulls.append(abs((mean - true) / sigma))
+            color = colors[i] if colors else None
+            ax.bar(x + offsets[i], pulls, width, color=color, zorder=2)
+        plabel = _param_label(ref_samples, param)
+        ax.set_ylabel(r'$|\Delta ' + plabel + r'|/\sigma_{' + plabel + r'}$', fontsize=11)
+
     # labels are the ticks for the x-axis
-    axes[1].set_xticks(range(len(xlabels)))
-    axes[1].set_xticklabels(xlabels, rotation=35, ha='right')
+    axes[-1].set_xticks(x)
+    axes[-1].set_xticklabels(xlabels, rotation=35, ha='right')
 
     if samples_labels:
-        axes[0].legend(ncol=len(samples_labels)//2, loc='upper left', bbox_to_anchor=(0.2, 1.6))
+        # 'outside upper center' reserves its own margin under a constrained
+        # layout, instead of overlapping axes[0]'s title/ylabel like an
+        # axes-anchored legend would.
+        handles, _ = axes[0].get_legend_handles_labels()
+        fig.legend(handles, samples_labels, ncol=len(samples_labels), loc='outside upper center')
     return fig, axes
 
 def plot_relative_uncertainties(samples_lists, params_to_plot, xlabels=None, samples_labels=None, colors=None):
