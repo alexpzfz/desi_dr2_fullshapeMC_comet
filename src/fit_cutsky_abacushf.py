@@ -1,7 +1,13 @@
 import os
 import sys
+import json
+import hashlib
 from pathlib import Path
 import numpy as np
+import jax
+import jax.numpy as jnp
+jax.config.update('jax_enable_x64', True)
+
 import lsstypes as types
 from clustering_statistics.tools import get_stats_fn
 import matplotlib.pyplot as plt
@@ -18,7 +24,6 @@ from theory import COMET
 from read_data import get_obs_pk, get_obs_pk_bk
 from priors_mc import get_pars
 import plot_utils as pu
-
 
 
 
@@ -162,6 +167,45 @@ def _parse_tuple_ell(ell_str):
         return tuple(int(x) for x in ell_str)
 
 
+def _load_scale_map(json_str, arg_name, valid_labels):
+    """Parse a --*_map JSON string of the form '{"LRG2": ..., "QSO": ...}'
+    into a dict, validating that every key is a tracer label that was
+    actually requested via --tracer_label."""
+    if json_str is None:
+        return {}
+    try:
+        mapping = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Could not parse --{arg_name} as JSON: {e}")
+    if not isinstance(mapping, dict):
+        raise ValueError(f"--{arg_name} must be a JSON object mapping tracer_label to an override value, "
+                         f"e.g. '{{\"QSO\": 0.25}}'")
+    unknown = set(mapping) - set(valid_labels)
+    if unknown:
+        raise ValueError(f"--{arg_name} references unknown tracer label(s) {sorted(unknown)}; "
+                         f"must be a subset of --tracer_label {list(valid_labels)}")
+    return mapping
+
+
+def _map_ell_value(val, bispec=False):
+    """Normalize an ell override value coming from a JSON map: a list of ints
+    for pk (e.g. [0, 2]), or a list of 3-int lists for bk (e.g. [[0, 0, 0], [2, 0, 2]])."""
+    if bispec:
+        return [tuple(int(x) for x in ell) for ell in val]
+    return [int(x) for x in val]
+
+
+def _scale_maps_suffix(maps_dict):
+    """Short, deterministic filename suffix summarizing any per-tracer scale-cut
+    overrides, so runs with different --*_map settings don't collide on disk."""
+    active = {name: m for name, m in maps_dict.items() if m}
+    if not active:
+        return ''
+    canonical = json.dumps(active, sort_keys=True)
+    h = hashlib.sha1(canonical.encode()).hexdigest()[:8]
+    return f'_pertracer{h}'
+
+
 if __name__ == "__main__":
     import argparse
     import time
@@ -178,6 +222,13 @@ if __name__ == "__main__":
     parser.add_argument('--ellP', type=int, nargs='*', default=[0, 2])
     parser.add_argument('--kminP', type=float, default=0.02, nargs='*')
     parser.add_argument('--kmaxP', type=float, default=0.3, nargs='*')
+    parser.add_argument('--ellP_map', type=str, default=None, help="JSON object overriding --ellP for specific "
+                        "tracer labels, e.g. '{\"QSO\": [0, 2, 4]}'. Tracers not listed use --ellP.")
+    parser.add_argument('--kminP_map', type=str, default=None, help="JSON object overriding --kminP for specific "
+                        "tracer labels (scalar or per-ell list), e.g. '{\"LRG2\": 0.03, \"QSO\": [0.03, 0.04]}'. "
+                        "Tracers not listed use --kminP.")
+    parser.add_argument('--kmaxP_map', type=str, default=None, help="JSON object overriding --kmaxP for specific "
+                        "tracer labels (scalar or per-ell list), e.g. '{\"QSO\": 0.25}'. Tracers not listed use --kmaxP.")
     parser.add_argument('--ellwinP', type=int, nargs='*', default=[0, 2, 4])
     parser.add_argument('--kwinminP', type=float, default=0.0015, nargs='*')
     parser.add_argument('--kwinmaxP', type=float, default=0.5, nargs='*')
@@ -187,6 +238,12 @@ if __name__ == "__main__":
     parser.add_argument('--ellB', type=_parse_tuple_ell, nargs='*', default=[(0, 0, 0), (2, 0, 2)])
     parser.add_argument('--kminB', type=float, default=0.02, nargs='*')
     parser.add_argument('--kmaxB', type=float, default=0.2, nargs='*')
+    parser.add_argument('--ellB_map', type=str, default=None, help="JSON object overriding --ellB for specific "
+                        "tracer labels, e.g. '{\"QSO\": [[0, 0, 0]]}'. Tracers not listed use --ellB.")
+    parser.add_argument('--kminB_map', type=str, default=None, help="JSON object overriding --kminB for specific "
+                        "tracer labels (scalar or per-ell list), e.g. '{\"QSO\": 0.03}'. Tracers not listed use --kminB.")
+    parser.add_argument('--kmaxB_map', type=str, default=None, help="JSON object overriding --kmaxB for specific "
+                        "tracer labels (scalar or per-ell list), e.g. '{\"QSO\": 0.15}'. Tracers not listed use --kmaxB.")
     parser.add_argument('--ellwinB', type=_parse_tuple_ell, nargs='*', default=[(0, 0, 0), (0, 2, 2)])
     parser.add_argument('--kwinminB', type=float, default=0.0015, nargs='*')
     parser.add_argument('--kwinmaxB', type=float, default=0.3, nargs='*')
@@ -232,12 +289,33 @@ if __name__ == "__main__":
         tracer_list.append(info['tracer'])
         zrange_list.append(info['zrange'])
 
+    # Per-tracer overrides of ell/kmin/kmax for pk and bk (for a joint fit
+    # where different tracers need different scale cuts and/or multipoles).
+    # Tracers not present in a given map fall back to the shared --ellP/--kminP/... value.
+    ellP_map = _load_scale_map(args.ellP_map, 'ellP_map', args.tracer_label)
+    kminP_map = _load_scale_map(args.kminP_map, 'kminP_map', args.tracer_label)
+    kmaxP_map = _load_scale_map(args.kmaxP_map, 'kmaxP_map', args.tracer_label)
+    ellB_map = _load_scale_map(args.ellB_map, 'ellB_map', args.tracer_label)
+    kminB_map = _load_scale_map(args.kminB_map, 'kminB_map', args.tracer_label)
+    kmaxB_map = _load_scale_map(args.kmaxB_map, 'kmaxB_map', args.tracer_label)
+    scale_maps_suffix = _scale_maps_suffix({'ellP_map': ellP_map, 'kminP_map': kminP_map, 'kmaxP_map': kmaxP_map,
+                                            'ellB_map': ellB_map, 'kminB_map': kminB_map, 'kmaxB_map': kmaxB_map})
+    if scale_maps_suffix:
+        print(f"Per-tracer scale-cut overrides: ellP_map={ellP_map}, kminP_map={kminP_map}, kmaxP_map={kmaxP_map}, "
+              f"ellB_map={ellB_map}, kminB_map={kminB_map}, kmaxB_map={kmaxB_map}")
+
     # Build one observable per z-bin for simultaneous fit
     observables = []
     mocktypes_used = []
     mocktypes_cov_used = []
     data_dir_kw = {} if args.data_dir is None else {'outdir': args.data_dir}
-    for tracer_i, zr in zip(tracer_list, zrange_list):
+    for label, tracer_i, zr in zip(args.tracer_label, tracer_list, zrange_list):
+        ellP_i = _map_ell_value(ellP_map[label], bispec=False) if label in ellP_map else args.ellP
+        kminP_i = kminP_map.get(label, args.kminP)
+        kmaxP_i = kmaxP_map.get(label, args.kmaxP)
+        ellB_i = _map_ell_value(ellB_map[label], bispec=True) if label in ellB_map else args.ellB
+        kminB_i = kminB_map.get(label, args.kminB)
+        kmaxB_i = kmaxB_map.get(label, args.kmaxB)
         if tracer_i == 'BGS':
             mocktype = 'abacus-2ndgen-dr2-altmtl'
             mocktype_cov = 'holi-bgs-altmtl'
@@ -249,16 +327,19 @@ if __name__ == "__main__":
         mocktype_cov = args.mocktype_cov or mocktype_cov
         mocktypes_used.append(mocktype)
         mocktypes_cov_used.append(mocktype_cov)
+        if label in ellP_map or label in kminP_map or label in kmaxP_map or label in ellB_map or label in kminB_map or label in kmaxB_map:
+            print(f"  [{label}] using ellP={ellP_i}, kminP={kminP_i}, kmaxP={kmaxP_i}"
+                  + (f", ellB={ellB_i}, kminB={kminB_i}, kmaxB={kmaxB_i}" if args.bispec else ""))
         if not args.bispec:
             obs_i = get_obs_pk(tracer=tracer_i, zrange=zr, region=args.region, mocktype=mocktype, mocktype_cov=mocktype_cov,
-                               ell=args.ellP, kmin=args.kminP, kmax=args.kmaxP, ellwin=args.ellwinP,
+                               ell=ellP_i, kmin=kminP_i, kmax=kmaxP_i, ellwin=args.ellwinP,
                                kwinmin=args.kwinminP, kwinmax=args.kwinmaxP, dk=args.dkP, use_Mpc=not args.mpc_h,
                                **data_dir_kw)
         else:
             obs_i = get_obs_pk_bk(tracer=tracer_i, zrange=zr, region=args.region, mocktype=mocktype, mocktype_cov=mocktype_cov,
-                                        ellP=args.ellP, kminP=args.kminP, kmaxP=args.kmaxP, ellwinP=args.ellwinP,
+                                        ellP=ellP_i, kminP=kminP_i, kmaxP=kmaxP_i, ellwinP=args.ellwinP,
                                         kwinminP=args.kwinminP, kwinmaxP=args.kwinmaxP, dkP=args.dkP,
-                                        ellB=args.ellB, kminB=args.kminB, kmaxB=args.kmaxB, ellwinB=args.ellwinB,
+                                        ellB=ellB_i, kminB=kminB_i, kmaxB=kmaxB_i, ellwinB=args.ellwinB,
                                         kwinminB=args.kwinminB, kwinmaxB=args.kwinmaxB, dkB=args.dkB, slice_winB_theory=2,
                                         use_Mpc=not args.mpc_h, **data_dir_kw)
         print(f"Effective redshift from geometry: {obs_i.cosmo_fid['z']:.3f}, from zrange: {zr}")
@@ -297,9 +378,10 @@ if __name__ == "__main__":
     likelihood = Likelihood(observables, pars, am_params=am_params, conditional_prior=conditional_prior_fn)
 
     os.makedirs(args.outdir, exist_ok=True)
+    extra = (args.extra or '') + scale_maps_suffix or None
     fn = get_fn(tracer_label=args.tracer_label, region=args.region,  freedom=args.freedom, dkP=args.dkP, kmaxP=args.kmaxP,
                 bispec=args.bispec, dkB=args.dkB, kmaxB=args.kmaxB,
-                de_model=args.de_model, reparam_option=args.reparam, free_Mnu=args.free_Mnu, outdir=args.outdir, extra=args.extra,
+                de_model=args.de_model, reparam_option=args.reparam, free_Mnu=args.free_Mnu, outdir=args.outdir, extra=extra,
                 counterterm_basis=args.counterterm_basis, avirB_free=args.avirB_free, use_Mpc=not args.mpc_h,
                 zeff_choice=args.zeff_choice)
     if args.minimize:

@@ -19,7 +19,7 @@ tracer_labels=("BGS" "LRG1" "LRG2" "LRG3" "ELG1" "ELG2" "QSO")
 # Power spectrum settings
 dkP="0.005"
 kminP="0.02 0.02"
-kmaxP="0.35 0.25"
+kmaxP="0.35 0.3"
 ellP="0 2"
 ellwinP="0 2 4"
 kwinminP="0.0015 0.0015 0.0015"
@@ -28,7 +28,7 @@ kwinmaxP="0.5 0.5 0.5"
 # Bisectrum settings
 dkB="0.005"
 kminB="0.02 0.02"
-kmaxB="0.2 0.15"
+kmaxB="0.2 0.1"
 ellB="000 202"
 #ellwinB="000 022 110 112 220 222"
 #kwinminB="0.005 0.005 0.005 0.005 0.005 0.005"
@@ -58,10 +58,12 @@ Important:
 
 Modes:
     Array mode: Each array task fits one tracer independently
+      - Used when you don't pass --tracer_label yourself
       - Must specify --array and --cpus-per-task in sbatch options
       - tracer_labels=(${tracer_labels[@]}), so --array=0-$((${#tracer_labels[@]} - 1)) covers all of them
-    Joint mode: Single job fits all tracers together (use --joint flag)
-      - Defaults to $((8 * ${#tracer_labels[@]})) cpus-per-task for all ${#tracer_labels[@]} tracers
+    Joint mode: Single job fits several tracers together
+      - Triggered by passing --tracer_label with the tracers you want combined
+      - Defaults to 8 cpus-per-task per tracer listed
 
 Examples:
     Array mode (fits one tracer per task):
@@ -70,9 +72,14 @@ Examples:
       sbatch --array=0-6 --cpus-per-task=8 $script_name -- --mpc_h
       sbatch --array=3 --cpus-per-task=8 $script_name -- --bispec --avirB_free
 
-    Joint mode (all tracers in one job):
-      sbatch --cpus-per-task=56 $script_name -- --joint --kmaxP 0.30 0.20
-      sbatch --cpus-per-task=56 $script_name -- --joint --bispec
+    Joint mode (explicitly list the tracers to fit together in one job):
+      sbatch --cpus-per-task=56 $script_name -- --tracer_label ${tracer_labels[@]} --kmaxP 0.30 0.20
+      sbatch --cpus-per-task=24 $script_name -- --tracer_label LRG1 LRG2 LRG3 --bispec
+
+    Joint mode with per-tracer overrides (different kmin/kmax/ell for specific
+    tracers; tracers not listed in a *_map fall back to the shared value):
+      sbatch --cpus-per-task=56 $script_name -- --tracer_label ${tracer_labels[@]} --kmaxP 0.30 0.20 --kmaxP_map '{"QSO": 0.25}'
+      sbatch --cpus-per-task=24 $script_name -- --tracer_label LRG1 LRG2 LRG3 --bispec --kmaxB_map '{"QSO": 0.15}' --ellP_map '{"QSO": [0, 2, 4]}'
 EOF
 }
 
@@ -89,20 +96,34 @@ if [ "${#user_args[@]}" -gt 0 ] && [ "${user_args[0]}" = "--" ]; then
     user_args=("${user_args[@]:1}")
 fi
 
-# Check if joint fitting mode is requested
+# Joint mode is triggered by the user explicitly passing --tracer_label
+# (with the tracers to combine) instead of a dedicated --joint flag; find it
+# and collect the tracer names that follow, up to the next --option or the end.
+explicit_tracers=()
 joint_mode=false
-forwarded_user_args=()
-for arg in "${user_args[@]}"; do
-    if [ "$arg" = "--joint" ]; then
+for i in "${!user_args[@]}"; do
+    if [ "${user_args[$i]}" = "--tracer_label" ]; then
         joint_mode=true
-        continue
+        j=$((i + 1))
+        while [ "$j" -lt "${#user_args[@]}" ] && [[ "${user_args[$j]}" != --* ]]; do
+            explicit_tracers+=("${user_args[$j]}")
+            j=$((j + 1))
+        done
+        break
     fi
-    forwarded_user_args+=("$arg")
 done
+
+if [ "$joint_mode" = true ] && [ "${#explicit_tracers[@]}" -eq 0 ]; then
+    echo "Error: --tracer_label was passed with no tracers after it."
+    echo "Hint: e.g. sbatch $(basename "$0") -- --tracer_label LRG1 LRG2 LRG3"
+    exit 1
+fi
+
+forwarded_user_args=("${user_args[@]}")
 
 # Set default cpus based on mode if not specified by user
 if [ "$joint_mode" = true ]; then
-    default_cpus=$((8 * ${#tracer_labels[@]}))
+    default_cpus=$((8 * ${#explicit_tracers[@]}))
 else
     default_cpus=8
 fi
@@ -158,11 +179,9 @@ export OMP_NUM_THREADS=1
 
 # Build the command based on mode
 if [ "$joint_mode" = true ]; then
-    # Joint fit mode: pass all tracers as arguments to single --tracer_label
-    tracer_args=(--tracer_label "${tracer_labels[@]}")
-    
+    # Joint fit mode: --tracer_label (with the tracers to combine) is already
+    # present in forwarded_user_args, so it's not added here.
     srun -n 1 -c "$slurm_cpus" --cpu-bind=cores python -u "$REPO_ROOT/src/fit_cutsky_abacushf.py" \
-        "${tracer_args[@]}" \
         --region $region \
         --kminP $kminP \
         --kmaxP $kmaxP \
