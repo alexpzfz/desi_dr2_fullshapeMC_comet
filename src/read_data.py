@@ -235,7 +235,7 @@ def get_obs_pk_raw(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
         cov = cov_.value()
  
     nmocks = cov_.attrs['n_mocks'] if cov is not None else None
-    window_ = get_window_pk(tracer, zrange, region, mocktype)
+    window_ = get_window_pk(tracer_str, zrange, region, mocktype)
     if not isinstance(kwinmin, list):
         kwinmin = [kwinmin] * len(ellwin)
     if not isinstance(kwinmax, list):
@@ -354,6 +354,41 @@ def get_obs_bk_cached(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
     return obs
 
 
+def get_obs_bk_raw(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
+                   kwinmin=0.0, kwinmax=0.5, ell=[(0, 0, 0), (2, 0, 2)],
+                   ellwin=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)],
+                   nocov=False, mocktype_cov='holi-v3-altmtl', dk=0.005, slice_winB=None, use_Mpc=True):
+    tracer_str = tracer if not 'ELG' in tracer else 'ELG_LOPnotqso'
+    bk = get_mean_bk(tracer_str, zrange, region, mocktype, dk=dk)
+    bk = bk.get(ells=ell)
+    bell_list = [bk.get(ells=ll).value() for ll in ell]
+    k1k2 = bk.get(ells=ell[0]).coords('k')
+    cov = None
+    if not nocov:
+        cov_ = get_cov_bk(tracer_str, zrange, region, mocktype_cov, rang=(0, 1000), dk=dk)
+        cov_ = cov_.at.observable.match(bk)
+        cov = cov_.value()
+
+    nmocks = cov_.attrs['n_mocks'] if cov is not None else None
+
+    window_ = get_window_bk(tracer_str, zrange, region, mocktype)
+    window_ = window_.at.theory.get(ells=ellwin)
+    if slice_winB is not None:
+        window_ = window_.at.theory.select(k=slice(0, None, slice_winB))
+    window_ = window_.at.observable.match(bk)
+    win = window_.value()
+    kwin = []
+    for ll in ellwin:
+        kwin.append(window_.theory.get(ells=ll).coords('k'))
+    zeff = None
+
+    obs = BispectrumSugiyamaMultipoles(k1k2, bell_list, ell=ell, cov=cov,
+                                       cosmo_fid=cosmo_fid | {'z': zeff}, kmin=kmin, kmax=kmax,
+                                       wmat=win, pairwin=kwin, ellwin=ellwin, kwinmin=kwinmin, kwinmax=kwinmax,
+                                       nmocks_cov=nmocks, save_Mpc_units=use_Mpc)
+    return obs
+
+
 def get_obs_pk_bk_cached(tracer, zrange, region, mocktype, kminP=0.01, kmaxP=0.3, ellP=[0, 2], ellB=[(0, 0, 0), (2, 0, 2)],
                             kwinminP=0.0, kwinmaxP=0.5, ellwinP=[0, 2, 4], kminB=0.01, kmaxB=0.2,
                             kwinminB=0.0, kwinmaxB=0.5, ellwinB=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)],
@@ -413,6 +448,41 @@ def get_obs_pk_bk_cached(tracer, zrange, region, mocktype, kminP=0.01, kmaxP=0.3
     obs = JointObservable(obs_pk, obs_bk, cov=cov, nmocks_cov=n_mocks_cov, cov_input_Mpc_units=False)
     return obs
 
+def get_obs_pk_bk_raw(tracer, zrange, region, mocktype, kminP=0.01, kmaxP=0.3, ellP=[0, 2], ellB=[(0, 0, 0), (2, 0, 2)],
+                        kwinminP=0.0, kwinmaxP=0.5, ellwinP=[0, 2, 4], kminB=0.01, kmaxB=0.2,
+                        kwinminB=0.0, kwinmaxB=0.5, ellwinB=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)],
+                        mocktype_cov='holi-v3-altmtl', dkP=0.005, dkB=0.005, slice_winB_theory=2,
+                        use_Mpc=True):
+    if not isinstance(kminP, list):
+        kminP = [kminP] * len(ellP)
+    if not isinstance(kmaxP, list):
+        kmaxP = [kmaxP] * len(ellP)
+    if not isinstance(kminB, list):
+        kminB = [kminB] * len(ellB)
+    if not isinstance(kmaxB, list):
+        kmaxB = [kmaxB] * len(ellB)
+
+    obs_pk = get_obs_pk_raw(tracer, zrange, region, mocktype, kmin=kminP, kmax=kmaxP,
+                            kwinmin=kwinminP, kwinmax=kwinmaxP, ell=ellP, ellwin=ellwinP,
+                            nocov=True, mocktype_cov=mocktype_cov, dk=dkP, use_Mpc=use_Mpc)
+    obs_bk = get_obs_bk_raw(tracer, zrange, region, mocktype, kmin=kminB, kmax=kmaxB,
+                            kwinmin=kwinminB, kwinmax=kwinmaxB, ell=ellB, ellwin=ellwinB,
+                            nocov=True, dk=dkB, slice_winB=slice_winB_theory, use_Mpc=use_Mpc)
+
+    tracer_str = tracer if not 'ELG' in tracer else 'ELG_LOPnotqso'
+    # get_cov_pk_bk_preprocessed applies the ellP/ellB selection and the
+    # kminP/kmaxP/kminB/kmaxB scale cuts per-mock before stacking, so the
+    # resulting covariance is already aligned with obs_pk/obs_bk -- no need
+    # to separately fetch the full (uncut) k grids and cut_cov() it after.
+    cov_ = get_cov_pk_bk_preprocessed(tracer_str, zrange, region, mocktype_cov, rang=(0, 1000),
+                                       dkP=dkP, dkB=dkB, kminP=kminP, kmaxP=kmaxP, kminB=kminB, kmaxB=kmaxB,
+                                       ellP=ellP, ellB=ellB)
+    cov = cov_.value()
+    n_mocks_cov = cov_.attrs['n_mocks']
+
+    obs = JointObservable(obs_pk, obs_bk, cov=cov, nmocks_cov=n_mocks_cov, cov_input_Mpc_units=False)
+    return obs
+
 def get_obs_pk_bk(tracer, zrange, region, mocktype, kminP=0.01, kmaxP=0.3, ellP=[0, 2], ellB=[(0, 0, 0), (2, 0, 2)],
                     kwinminP=0.0, kwinmaxP=0.5, ellwinP=[0, 2, 4], kminB=0.01, kmaxB=0.2,
                     kwinminB=0.0, kwinmaxB=0.5, ellwinB=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)],
@@ -429,7 +499,13 @@ def get_obs_pk_bk(tracer, zrange, region, mocktype, kminP=0.01, kmaxP=0.3, ellP=
                                     slice_winB_theory=slice_winB_theory,
                                     outdir=outdir, use_Mpc=use_Mpc)
     else:
-        raise NotImplementedError("Non-cached version of get_obs_pk_bk not implemented yet.")
+        return get_obs_pk_bk_raw(tracer, zrange, region, mocktype, kminP=kminP, kmaxP=kmaxP,
+                                 ellP=ellP, ellB=ellB,
+                                 kwinminP=kwinminP, kwinmaxP=kwinmaxP, ellwinP=ellwinP,
+                                 kminB=kminB, kmaxB=kmaxB,
+                                 kwinminB=kwinminB, kwinmaxB=kwinmaxB, ellwinB=ellwinB,
+                                 mocktype_cov=mocktype_cov, dkP=dkP, dkB=dkB,
+                                 slice_winB_theory=slice_winB_theory, use_Mpc=use_Mpc)
     
 
 if __name__ == "__main__":
