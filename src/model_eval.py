@@ -27,6 +27,7 @@ def build_likelihood_from_attrs(attrs):
         counterterm_basis=str(attrs['counterterm_basis']),
         avirB_free=bool(attrs['avirB_free']),
         mpc_h=bool(attrs['mpc_h']),
+        zeff_choice=str(attrs.get('zeff_choice', 'zsnap')),
     )
 
     data_dir = attrs.get('data_dir', 'None')
@@ -60,7 +61,8 @@ def build_likelihood_from_attrs(attrs):
                 ellB=[tuple(int(x) for x in row) for row in attrs['ellB']], kminB=list(attrs['kminB']), kmaxB=list(attrs['kmaxB']),
                 ellwinB=[tuple(int(x) for x in row) for row in attrs['ellwinB']], kwinminB=list(attrs['kwinminB']), kwinmaxB=list(attrs['kwinmaxB']),
                 dkB=float(attrs['dkB']), slice_winB_theory=2, use_Mpc=not args.mpc_h, **data_dir_kw)
-        obs_i.cosmo_fid['z'] = fc.zsnap_dict[tracer_i][zr]
+        if args.zeff_choice == 'zsnap':
+            obs_i.cosmo_fid['z'] = fc.zsnap_dict[tracer_i][zr]
         observables.append(obs_i)
 
     b1_ref, sigmaR_ref, sigma1_eff, fsat = fc.get_prior_refs(tracer_list, zrange_list)

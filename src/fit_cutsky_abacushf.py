@@ -42,7 +42,7 @@ def _fmt_float(x):
 
 def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, kmaxB=None,
            de_model='lambda', reparam_option='full', free_Mnu=False, outdir=str(env.CHAINS_DIR), extra=None,
-           counterterm_basis='DESIct', avirB_free=False, use_Mpc=True):
+           counterterm_basis='DESIct', avirB_free=False, use_Mpc=True, zeff_choice='zsnap'):
 
     if not isinstance(tracer_label, list):
         tracer_label = [tracer_label] 
@@ -74,8 +74,11 @@ def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, km
             fn += '_avirBfree'
     if counterterm_basis != 'DESIct':
         fn += f'_ct{counterterm_basis}'
+
+    fn += f'_{zeff_choice}'
     if not use_Mpc:
         fn += '_Mpch'
+
     if extra is not None:
         fn += f'_{extra}'
     return fn
@@ -194,6 +197,10 @@ if __name__ == "__main__":
     parser.add_argument('--freedom', type=str, default='interm', choices=['min', 'max', 'interm'])
     parser.add_argument('--free_Mnu', action='store_true')
     parser.add_argument('--mpc_h', action='store_true', help="Run the fit in Mpc/h units instead of Mpc. Switches the reparametrization to use sigma8 instead of sigma12.")
+    parser.add_argument('--zeff_choice', type=str, default='zsnap', choices=['zsnap', 'zgeom'],
+                        help="Which effective redshift to evaluate the theory at: 'zsnap' (default) uses the "
+                        "fixed AbacusSummit snapshot redshift from zsnap_dict; 'geometry' uses the effective "
+                        "redshift computed from the survey window/n(z) geometry instead. Reflected in the output filename.")
     parser.add_argument('--outdir', type=str, default=str(env.CHAINS_DIR))
     parser.add_argument('--n_live', type=int, default=2000)
     parser.add_argument('--extra', type=str, default=None, help="Extra string to add to output filename for uniqueness (e.g. to distinguish different sampler settings).")
@@ -213,7 +220,7 @@ if __name__ == "__main__":
     print(f"Power spectrum settings: ellP={args.ellP}, kminP={args.kminP}, kmaxP={args.kmaxP}, ellwinP={args.ellwinP}, kwinminP={args.kwinminP}, kwinmaxP={args.kwinmaxP}, dkP={args.dkP}")
     if args.bispec:
         print(f"Bispectrum settings: ellB={args.ellB}, kminB={args.kminB}, kmaxB={args.kmaxB}, ellwinB={args.ellwinB}, kwinminB={args.kwinminB}, kwinmaxB={args.kwinmaxB}, dkB={args.dkB}, avirB_free={args.avirB_free}")
-    print(f"DE model: {args.de_model}, reparametrization: {args.reparam}, freedom: {args.freedom}, free_Mnu: {args.free_Mnu}, counterterm_basis: {args.counterterm_basis}, units: {'Mpc/h' if args.mpc_h else 'Mpc'}")
+    print(f"DE model: {args.de_model}, reparametrization: {args.reparam}, freedom: {args.freedom}, free_Mnu: {args.free_Mnu}, counterterm_basis: {args.counterterm_basis}, units: {'Mpc/h' if args.mpc_h else 'Mpc'}, zeff_choice: {args.zeff_choice}")
 
 
     tracer_list = []
@@ -255,8 +262,11 @@ if __name__ == "__main__":
                                         kwinminB=args.kwinminB, kwinmaxB=args.kwinmaxB, dkB=args.dkB, slice_winB_theory=2,
                                         use_Mpc=not args.mpc_h, **data_dir_kw)
         print(f"Effective redshift from geometry: {obs_i.cosmo_fid['z']:.3f}, from zrange: {zr}")
-        obs_i.cosmo_fid['z'] = zsnap_dict[tracer_i][zr]
-        print(f'Switched effective redshift to zsnap: {obs_i.cosmo_fid["z"]:.3f}')
+        if args.zeff_choice == 'zsnap':
+            obs_i.cosmo_fid['z'] = zsnap_dict[tracer_i][zr]
+            print(f'Switched effective redshift to zsnap: {obs_i.cosmo_fid["z"]:.3f}')
+        else:
+            print(f"Using effective redshift from geometry: {obs_i.cosmo_fid['z']:.3f}")
         observables.append(obs_i)
 
 
@@ -290,7 +300,8 @@ if __name__ == "__main__":
     fn = get_fn(tracer_label=args.tracer_label, region=args.region,  freedom=args.freedom, dkP=args.dkP, kmaxP=args.kmaxP,
                 bispec=args.bispec, dkB=args.dkB, kmaxB=args.kmaxB,
                 de_model=args.de_model, reparam_option=args.reparam, free_Mnu=args.free_Mnu, outdir=args.outdir, extra=args.extra,
-                counterterm_basis=args.counterterm_basis, avirB_free=args.avirB_free, use_Mpc=not args.mpc_h)
+                counterterm_basis=args.counterterm_basis, avirB_free=args.avirB_free, use_Mpc=not args.mpc_h,
+                zeff_choice=args.zeff_choice)
     if args.minimize:
         # Stage 1: minimize with analytical marginalisation (AM) of the
         # linear nuisance parameters, and save the resulting MAP.
