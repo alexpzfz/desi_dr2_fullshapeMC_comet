@@ -1,5 +1,36 @@
 import os
 import sys
+
+# Must be set before `import jax`.
+#
+# JAX's CPU (XLA) backend does NOT expose a thread-count knob through
+# XLA_FLAGS in this jaxlib build -- empirically verified: neither
+# --xla_cpu_multi_thread_eigen nor --xla_cpu_use_xnnpack changes anything
+# (measured cpu_time/wall_time ratio ~32 either way on this node). What
+# actually sizes its execution thread pool is os.sched_getaffinity(0): the
+# ratio dropped from ~32 to ~1.0/2.9/5.8 when restricting the process to
+# 1/4/8 cores via taskset. So the real lever against nautilus's pool
+# processes all fighting over every core is CPU affinity (see
+# _pin_to_n_cores below and its use at the pool/sampler construction and
+# in --time_likelihood), not any XLA_FLAGS setting.
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
+# The cosmodesiconda env ships the xla_cuda12 PJRT plugin alongside the CPU
+# one. JAX unconditionally probes every registered plugin at backend
+# discovery time (before JAX_PLATFORMS is even consulted), so on a
+# --constraint=cpu node with no GPU driver the cuda12 plugin's cuInit()
+# check always fails. That failure is caught internally by JAX
+# (xla_bridge.discover_pjrt_plugins uses a bare `except:` around
+# plugin_module.initialize()) and is harmless -- it just logs a scary
+# traceback via logging.exception and moves on. Silence that one logger
+# so it stops cluttering the slurm log; JAX_PLATFORMS=cpu below still
+# ensures JAX only *uses* the cpu backend either way.
+import logging
+logging.getLogger('jax._src.xla_bridge').setLevel(logging.CRITICAL)
+os.environ.setdefault('JAX_PLATFORMS', 'cpu')
+
 import json
 import hashlib
 from pathlib import Path
@@ -206,9 +237,203 @@ def _scale_maps_suffix(maps_dict):
     return f'_pertracer{h}'
 
 
+def _w0wa_conditional_prior(params):
+    # Module-level (not a closure inside __main__) so it can be pickled by
+    # reference to the pool workers under the 'spawn' start method.
+    return params['w0'] + params['wa'] < 0
+
+
+def _load_shm_array(path):
+    # Copy-on-write memory map: all workers share the same physical pages of
+    # the file in /dev/shm until (if ever) one writes to its view.
+    return np.load(path, mmap_mode='c')
+
+
+def _dump_likelihood_shared(obj, directory, min_bytes=1_000_000):
+    """Pickle obj to directory/likelihood.pkl, but store every large plain
+    numpy array as its own .npy file in `directory` (meant to be /dev/shm) and
+    pickle just a reference to it. Workers then memory-map those files instead
+    of each holding a private copy (the likelihood's data arrays are ~all of
+    its ~675 MB, which x256 workers was a big part of the OOM)."""
+    import pickle
+
+    class _ShmPickler(pickle.Pickler):
+        n_shared = 0
+        shared_bytes = 0
+
+        def reducer_override(self, o):
+            if type(o) is np.ndarray and o.nbytes >= min_bytes and not o.dtype.hasobject:
+                path = os.path.join(directory, f'arr{self.n_shared:04d}.npy')
+                np.save(path, o, allow_pickle=False)
+                self.n_shared += 1
+                self.shared_bytes += o.nbytes
+                return _load_shm_array, (path,)
+            return NotImplemented
+
+    path = os.path.join(directory, 'likelihood.pkl')
+    with open(path, 'wb') as f:
+        p = _ShmPickler(f, protocol=pickle.HIGHEST_PROTOCOL)
+        p.dump(obj)
+    return path, p.n_shared, p.shared_bytes
+
+
+def _pickle_size_breakdown(obj, top=8):
+    """Tally the array payload inside obj's pickle by kind (numpy vs jax vs
+    other) and list the largest arrays. Tells us how much of the pickle could
+    be shared between workers via memory-mapped files."""
+    import io
+    import pickle
+    from collections import Counter
+    sizes, counts, big = Counter(), Counter(), []
+
+    class _Tally(pickle.Pickler):
+        def reducer_override(self, o):
+            kind = None
+            if isinstance(o, np.ndarray):
+                kind = 'numpy.ndarray'
+            elif type(o).__module__.startswith(('jax', 'jaxlib')) and hasattr(o, 'nbytes'):
+                kind = 'jax array'
+            if kind:
+                sizes[kind] += o.nbytes
+                counts[kind] += 1
+                big.append((o.nbytes, kind, tuple(o.shape), str(o.dtype)))
+            return NotImplemented
+
+    buf = io.BytesIO()
+    _Tally(buf, protocol=pickle.HIGHEST_PROTOCOL).dump(obj)
+    total = buf.tell()
+    print(f"pickle total: {total / 1e6:.0f} MB")
+    for kind in sizes:
+        print(f"  {kind}: {sizes[kind] / 1e6:.0f} MB in {counts[kind]} arrays")
+    print(f"  everything else: {(total - sum(sizes.values())) / 1e6:.0f} MB")
+    print(f"largest {top} arrays:")
+    for nbytes, kind, shape, dtype in sorted(big, reverse=True)[:top]:
+        print(f"  {nbytes / 1e6:8.1f} MB  {kind}  shape={shape}  dtype={dtype}")
+
+
+def _find_unpicklable(obj, path='likelihood', _seen=None, _out=None):
+    """Recursively walk obj's attributes/containers and return a list of
+    (path, type, error) for the *leaf* objects that fail to pickle. Used by
+    --check_pickle, since 'spawn' needs everything sent to workers picklable."""
+    import pickle
+    _seen = set() if _seen is None else _seen
+    _out = [] if _out is None else _out
+    if id(obj) in _seen:
+        return _out
+    _seen.add(id(obj))
+    try:
+        pickle.dumps(obj)
+        return _out
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
+    if isinstance(obj, dict):
+        children = [(f"{path}[{k!r}]", v) for k, v in obj.items()]
+    elif isinstance(obj, (list, tuple, set)):
+        children = [(f"{path}[{i}]", v) for i, v in enumerate(obj)]
+    elif hasattr(obj, '__dict__'):
+        children = [(f"{path}.{k}", v) for k, v in vars(obj).items()]
+    else:
+        children = []
+    n_before = len(_out)
+    for p, v in children:
+        _find_unpicklable(v, p, _seen, _out)
+    if len(_out) == n_before:  # no failing child: obj itself is the culprit
+        _out.append((path, type(obj).__name__, err))
+    return _out
+
+
+def _pin_to_n_cores(n_cores, worker_index=0):
+    """Restrict the calling process to `n_cores` distinct CPUs, taking the
+    worker_index'th disjoint slice of the process's currently-allowed set
+    (from os.sched_getaffinity, which is what SLURM's --cpu-bind sets up).
+
+    JAX's CPU thread pool sizes itself off this affinity mask, not off any
+    XLA_FLAGS setting (verified empirically: cpu_time/wall_time ratio for a
+    single JAX call tracked the taskset core count almost exactly, and was
+    unaffected by --xla_cpu_multi_thread_eigen or --xla_cpu_use_xnnpack).
+    So pinning each nautilus pool worker to its own slice of cores is the
+    actual way to cap how many cores a single JAX call can use, and to stop
+    N pool workers from all contending for every core at once.
+    """
+    available = sorted(os.sched_getaffinity(0))
+    start = worker_index * n_cores
+    my_cores = available[start:start + n_cores]
+    if len(my_cores) < n_cores:
+        raise ValueError(f"Not enough CPUs in affinity mask ({len(available)}) to give "
+                          f"worker_index={worker_index} its {n_cores} core(s).")
+    os.sched_setaffinity(0, my_cores)
+    return my_cores
+
+
+class _WorkerLikelihood:
+    """Picklable stand-in for NautilusSampler.likelihood_wrapper (same logic),
+    without the bound-method link to the sampler and its pool. Sent to each
+    worker once via the pool initializer instead of with every map() chunk."""
+
+    def __init__(self, likelihood):
+        self.likelihood = likelihood
+        self.params = likelihood.params
+        self.require_blobs = len(self.params.exported_derived_names) > 0
+        self._n_calls = 0
+
+    def _log_memory(self):
+        # Report resident memory of a few workers at a few call counts, to see
+        # the real per-worker footprint (static data + JAX/numba runtime state).
+        import multiprocessing as mp
+        ident = mp.current_process()._identity
+        if not ident or ident[0] > 4:
+            return
+        # RssAnon = private memory; RssFile/RssShmem = mapped shared pages (the
+        # memory-mapped likelihood arrays), which are counted in every worker's
+        # VmRSS but only once in the job's real memory usage.
+        keys = ('VmRSS', 'VmHWM', 'RssAnon', 'RssFile', 'RssShmem')
+        with open('/proc/self/status') as f:
+            mem = {k: v.strip() for k, v in (line.split(':', 1) for line in f if line.startswith(keys))}
+        print(f"[pool worker {ident[0] - 1}] call {self._n_calls}: " + ", ".join(f"{k}={mem.get(k)}" for k in keys), flush=True)
+
+    def __call__(self, param_dict):
+        self._n_calls += 1
+        if self._n_calls in (1, 50, 1000):
+            self._log_memory()
+        full_dict = self.params.get_full_dict(param_dict)
+        loglike = self.likelihood.get_loglike(full_dict)
+        if self.require_blobs:
+            return loglike, [full_dict[name] for name in self.params.exported_derived_names]
+        return loglike
+
+
+def _pool_worker_init(threads_per_worker, likelihood_path):
+    """multiprocessing.Pool initializer: pin this worker to its own slice of
+    cores based on its 1-indexed pool slot (see _pin_to_n_cores), and install
+    the likelihood in nautilus's worker global (what nautilus itself does when
+    given an int pool), so map() only ships the small parameter dicts.
+
+    The likelihood is loaded from a pickle file (on node-local /dev/shm)
+    rather than passed via initargs: with 'spawn', Pool starts workers one at
+    a time and pipes initargs to each child before starting the next, so a
+    649 MB payload made startup serial (~19 s/worker, 40 min for 128 workers).
+    Passing just a path lets all workers boot and load in parallel."""
+    import multiprocessing as mp
+    import pickle
+    from nautilus.pool import initialize_worker
+    worker_index = mp.current_process()._identity[0] - 1
+    cores = _pin_to_n_cores(threads_per_worker, worker_index)
+    with open(likelihood_path, 'rb') as f:
+        initialize_worker(pickle.load(f))
+    print(f"[pool worker {worker_index}] pinned to cores {cores}, likelihood loaded", flush=True)
+
+
 if __name__ == "__main__":
     import argparse
     import time
+    import multiprocessing as mp
+    # Force 'spawn' instead of the Linux default 'fork' for the nautilus
+    # worker pool below. Forking a process that has already imported jax
+    # duplicates its (multi-threaded) XLA runtime into each child, which
+    # JAX explicitly warns is unsafe and defeats the single-thread-per-call
+    # setup above. 'spawn' starts each worker fresh so it re-applies the
+    # XLA_FLAGS/OMP_NUM_THREADS env vars set at the top of this file.
+    mp.set_start_method('spawn', force=True)
     parser = argparse.ArgumentParser()
     parser.add_argument('--tracer_label', type=str, default='LRG', nargs='*', help="Tracer label(s) to fit. Should be one of LRG1, LRG2, LRG3, ELG1, ELG2, QSO. If multiple are provided, they will be fit simultaneously with shared cosmological parameters but independent nuisance parameters.")
     parser.add_argument('--region', type=str, default='GCcomb')
@@ -259,17 +484,21 @@ if __name__ == "__main__":
                         "fixed AbacusSummit snapshot redshift from zsnap_dict; 'geometry' uses the effective "
                         "redshift computed from the survey window/n(z) geometry instead. Reflected in the output filename.")
     parser.add_argument('--outdir', type=str, default=str(env.CHAINS_DIR))
-    parser.add_argument('--n_live', type=int, default=2000)
+    parser.add_argument('--n_live', type=int, default=3000)
     parser.add_argument('--extra', type=str, default=None, help="Extra string to add to output filename for uniqueness (e.g. to distinguish different sampler settings).")
     parser.add_argument('--minimize', action='store_true', help="Run an iMinuit MIGRAD minimization instead of Nautilus nested sampling.")
     parser.add_argument('--hesse', action='store_true', help="Run HESSE after MIGRAD to get the covariance matrix. Only used with --minimize.")
     parser.add_argument('--seed_init', type=int, default=None, help="Random seed for drawing the Minuit starting point from the priors. Only used with --minimize.")
     parser.add_argument('--plot_contours', action='store_true', help="After the Nautilus chain finishes, plot the triangle/contour plot for the cosmological parameters and save it to --plot_dir. Not used with --minimize.")
     parser.add_argument('--plot_dir', type=str, default=str(env.PLOTS_DIR_CUTSKY_ABACUSHF), help="Directory to store the contour plot in, when --plot_contours is set.")
+    parser.add_argument('--check_pickle', action='store_true', help="Build the likelihood, report every attribute "
+                        "that cannot be pickled (required by the 'spawn' worker pool), and exit.")
+    parser.add_argument('--time_likelihood', type=int, default=None, help="Instead of minimizing/sampling, time this many "
+                        "calls to likelihood.get_loglike() at the YAML-default fiducial value of each free parameter, "
+                        "then exit. Useful for benchmarking single-call cost under different core-pinning settings "
+                        "(see COMET_THREADS_PER_WORKER / _pin_to_n_cores at the top of this file).")
 
     args = parser.parse_args()
-
-    os.environ['OMP_NUM_THREADS'] = '1'  # to avoid numpy multithreading issues with multiprocessing
 
     print(f"Fitting tracer(s) {args.tracer_label} in region {args.region}")
     if args.mocktype or args.mocktype_cov or args.data_dir:
@@ -368,14 +597,57 @@ if __name__ == "__main__":
 
     pars = build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array)
 
-    conditional_prior_fn = None
-    if args.de_model == 'w0wa':
-        def conditional_prior_fn(params):
-            w0 = params['w0']
-            wa = params['wa']
-            return w0 + wa < 0
-    
+    conditional_prior_fn = _w0wa_conditional_prior if args.de_model == 'w0wa' else None
+
     likelihood = Likelihood(observables, pars, am_params=am_params, conditional_prior=conditional_prior_fn)
+
+    if args.check_pickle:
+        import pickle
+        bad = _find_unpicklable(likelihood)
+        if not bad:
+            print("likelihood is picklable.")
+            _pickle_size_breakdown(likelihood)
+        else:
+            print(f"{len(bad)} unpicklable object(s) reachable from the likelihood:")
+            for p, t, e in bad:
+                print(f"  {p}  [{t}]  -> {e}")
+        sys.exit(0)
+
+    if args.time_likelihood:
+        # Pin this process the same way a real pool worker would be pinned
+        # below, so the benchmark reflects the actual per-worker core budget
+        # instead of running unpinned across everything --cpus-per-task grants.
+        threads_per_worker = int(os.environ.get('COMET_THREADS_PER_WORKER', '1'))
+        my_cores = _pin_to_n_cores(threads_per_worker)
+        print(f"Pinned this process to {len(my_cores)} core(s): {my_cores}")
+
+        # Same point nautilus/Minuit would evaluate: the YAML-default 'value'
+        # for each free parameter, filled out to the full dict get_loglike expects.
+        fiducial = {name: pars.parameters[name].value for name in pars.sampled_param_names}
+        full_dict = pars.get_full_dict(fiducial)
+
+        loglike = likelihood.get_loglike(full_dict)  # warm-up: triggers JAX tracing/compilation, excluded from timing
+        print(f"Warm-up call: loglike={loglike:.3f}")
+
+        n_calls = args.time_likelihood
+        times = np.empty(n_calls)
+        cpu_times = np.empty(n_calls)
+        for i in range(n_calls):
+            t0 = time.perf_counter()
+            c0 = time.process_time()
+            likelihood.get_loglike(full_dict)
+            times[i] = time.perf_counter() - t0
+            cpu_times[i] = time.process_time() - c0
+        print(f"get_loglike x{n_calls}: wall mean={times.mean()*1e3:.2f} ms  median={np.median(times)*1e3:.2f} ms  "
+              f"std={times.std()*1e3:.2f} ms  min={times.min()*1e3:.2f} ms  max={times.max()*1e3:.2f} ms")
+        # time.process_time() sums CPU time across all threads of this process.
+        # ratio ~= 1 means the call ran on effectively one core no matter how
+        # many OS threads exist; ratio ~= N means it actually used N cores'
+        # worth of CPU time per call, regardless of what any XLA flag claims.
+        ratio = cpu_times.sum() / times.sum()
+        print(f"get_loglike x{n_calls}: cpu mean={cpu_times.mean()*1e3:.2f} ms  "
+              f"cpu_time/wall_time ratio={ratio:.2f} (~1 = single-threaded, ~N = using N cores/call)")
+        sys.exit(0)
 
     os.makedirs(args.outdir, exist_ok=True)
     extra = (args.extra or '') + scale_maps_suffix or None
@@ -430,22 +702,54 @@ if __name__ == "__main__":
     else:
         fn_snap = fn + '_snap.hdf5'
 
-        # get available cores depending on environment (e.g. SLURM_CPUS_PER_TASK for slurm, or default to os.cpu_count())
-        n_threads = int(os.environ.get('SLURM_CPUS_PER_TASK', os.cpu_count()))
-        print(f"Using {n_threads} threads for sampling.")
-        print(f"Pool size for Nautilus sampler: {n_threads}")
+        # Actual CPU budget for this job, as granted by SLURM (--cpu-bind sets
+        # this affinity mask); this is what _pin_to_n_cores slices up below.
+        n_threads = len(os.sched_getaffinity(0))
+        # Cores per pool worker. Default 1: one process per core, each JAX
+        # call single-threaded -- the setup recommended after benchmarking
+        # (see COMET_THREADS_PER_WORKER in the --time_likelihood benchmark).
+        # Set e.g. COMET_THREADS_PER_WORKER=4 to instead run fewer, wider
+        # workers (pool=n_threads//4, each pinned to 4 cores).
+        threads_per_worker = int(os.environ.get('COMET_THREADS_PER_WORKER', '1'))
+        n_workers = max(1, n_threads // threads_per_worker)
+        print(f"{n_threads} CPUs available. Using {n_workers} pool worker(s) x "
+              f"{threads_per_worker} core(s)/worker ({n_workers * threads_per_worker} of {n_threads} cores used).")
 
-        sampler = NautilusSampler(likelihood, n_live=args.n_live, filepath=fn_snap, pool=n_threads)
+        import shutil
+        import tempfile
+        # Dump the likelihood once to node-local RAM (/dev/shm); its big numpy
+        # arrays are stored as separate files that workers memory-map (shared
+        # physical pages), the rest is a small pickle every worker loads.
+        t_dump = time.time()
+        shm_dir = tempfile.mkdtemp(prefix='comet_likelihood_', dir='/dev/shm' if os.path.isdir('/dev/shm') else None)
+        likelihood_path, n_shared, shared_bytes = _dump_likelihood_shared(_WorkerLikelihood(likelihood), shm_dir)
+        print(f"Dumped likelihood to {shm_dir}: {n_shared} arrays ({shared_bytes/1e6:.0f} MB) shared via mmap, "
+              f"{os.path.getsize(likelihood_path)/1e6:.1f} MB pickled per worker, in {time.time() - t_dump:.1f} s", flush=True)
 
-        # run sampler
-        t0 = time.time()
-        print("Starting sampler...")
+        try:
+            t_pool = time.time()
+            pool = mp.get_context('spawn').Pool(n_workers, initializer=_pool_worker_init,
+                                                initargs=(threads_per_worker, likelihood_path))
+            print(f"Pool of {n_workers} workers launched in {time.time() - t_pool:.1f} s "
+                  f"(workers finish loading in the background)", flush=True)
+            sampler = NautilusSampler(likelihood, n_live=args.n_live, filepath=fn_snap, pool=pool)
+            # nautilus only swaps in likelihood_worker for int pools; do it by hand
+            # so map() calls the copy installed in each worker instead of pickling
+            # the whole likelihood with every chunk.
+            from nautilus.pool import likelihood_worker
+            sampler.sampler.likelihood = likelihood_worker
 
-        sampler.sample(verbose=True, discard_exploration=True)
+            # run sampler
+            t0 = time.time()
+            print("Starting sampler...")
+
+            sampler.sample(verbose=True, discard_exploration=True)
+        finally:
+            shutil.rmtree(shm_dir, ignore_errors=True)
         t1 = time.time()
         print(f"Sampler finished in {(t1-t0)/60:.2f} minutes.")
         run_metadata = {**vars(args), 'mocktypes_used': mocktypes_used, 'mocktypes_cov_used': mocktypes_cov_used,
-                         'n_threads': n_threads, 'pool_size': n_threads,
+                         'n_threads': n_threads, 'pool_size': n_workers, 'threads_per_worker': threads_per_worker,
                          'discard_exploration': True, 'elapsed_minutes': (t1 - t0) / 60}
         sampler.save(fn, metadata=run_metadata)
         print(f"Chain saved to {fn}")

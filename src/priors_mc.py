@@ -13,6 +13,11 @@ cosmo_abacus = {'c000': {'wb': 0.02237, 'wc': 0.1200, 'h': 0.6736, 'As': 2.083, 
                 'c002': {'wb': 0.02237, 'wc': 0.1200, 'h': 0.6278, 'As': 2.314, 'ns': 0.9649, 'Mnu': 0.06, 'w0': -0.7, 'wa': -0.5},
                 'c004': {'wb': 0.02237, 'wc': 0.1200, 'h': 0.6736, 'As': 1.7949, 'ns': 0.9649, 'Mnu': 0.06}}
 
+def _As_from_log10As(d):
+    """Module-level (picklable) derived-parameter function: As in units of 1e-9."""
+    return np.exp(d["log10As"]) / 1e10 * 1e9
+
+
 def _copy_param(p, source_name):
     """Derived-parameter function that ties a parameter to the value of another one."""
     return p[source_name]
@@ -99,7 +104,7 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
         raise ValueError(f"Invalid de_model: {de_model}. Must be one of 'lambda', 'w0', or 'w0wa'.")
     # pars.add_sampled_param("log10As", 3.04, prior=(2.31, 3.5), latex=r"\ln(10^{10} A_s)")
     pars.add_sampled_param("log10As", 3.04, prior=(1.61, 3.91), latex=r"\ln(10^{10} A_s)")
-    pars.set_derived_param("As", lambda d: np.exp(d["log10As"]) / 1e10 * 1e9, exported=True)     
+    pars.set_derived_param("As", _As_from_log10As, exported=False)
     
     if free_Mnu:
         pars.update_parameter('Mnu', 0.06, prior=(0.0, 5.0), prior_type='uniform', fixed=False)
@@ -183,7 +188,7 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
                 pars.update_parameter(f'avirB{sub_idz}', 0., prior=(0, 20./hconv), prior_type='uniform', fixed=False)
             else:
                 # Default: tie avirB to avir instead of sampling it independently.
-                pars.set_derived_param(f'avirB{sub_idz}', partial(_copy_param, source_name=f'avir{sub_idz}'), exported=True)
+                pars.set_derived_param(f'avirB{sub_idz}', partial(_copy_param, source_name=f'avir{sub_idz}'), exported=False)
         else:
             pars.set_and_fix_param(f'NB0{subscript}', 0.)
             pars.set_and_fix_param(f'MB0{subscript}', 0.)
