@@ -71,12 +71,7 @@ def build_likelihood_from_attrs(attrs):
     z_array = z_array[sort_idx]
     observables = [observables[i] for i in sort_idx]
 
-    if args.counterterm_basis == 'DESIct':
-        am_params = ['btd_r', 'a0_r', 'a2_r', 'NP0_r', 'NP20_r', 'NP22_r']
-    else:
-        am_params = ['btd_r', 'c0_r', 'c2_r', 'NP0_r', 'NP20_r', 'NP22_r']
-    if args.bispec:
-        am_params += ['NB0_r', 'MB0_r']
+    am_params = fc.get_am_params(args.counterterm_basis, args.bispec, args.reparam)
 
     pars = fc.build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array)
 
@@ -85,7 +80,8 @@ def build_likelihood_from_attrs(attrs):
         def conditional_prior_fn(params):
             return params['w0'] + params['wa'] < 0
 
-    return Likelihood(observables, pars, am_params=am_params, conditional_prior=conditional_prior_fn)
+    return Likelihood(observables, pars, am_params=am_params, jeffreys=args.reparam == 'jeffreys',
+                      conditional_prior=conditional_prior_fn)
 
 
 def evaluate_model_at_means(likelihood, samples):

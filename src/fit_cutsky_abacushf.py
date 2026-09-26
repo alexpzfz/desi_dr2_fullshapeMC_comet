@@ -91,7 +91,9 @@ def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, km
     tracer_str = '-'.join(tracer_label) if len(tracer_label) > 1 else tracer_label[0]
     
     fn = f'{outdir}/Abacus-hf-dr2-v2-altmtl_{tracer_str}_{region}_{freedom}freedom_{de_model}_pk_dk{_fmt_float(dkP)}_kmax{kmaxP_str}'
-    if reparam_option is not None:
+    if reparam_option == 'jeffreys':
+        fn += '_jeffreys'
+    elif reparam_option is not None:
         fn += f'_{reparam_option}reparam'
 
     if free_Mnu:
@@ -165,6 +167,27 @@ def get_prior_refs(tracer_list, zrange_list):
             sigma1_eff.append(150/70 * 10**(0.7/3) * 2.4 ** (1/2))
 
     return np.array(b1_ref, dtype=float), np.array(sigmaR_ref, dtype=float), np.array(sigma1_eff, dtype=float), np.array(fsat, dtype=float)
+
+
+def get_am_params(counterterm_basis, bispec, reparam):
+    """Linear nuisance parameters to analytically marginalise. With
+    reparam='jeffreys' they are not reparametrised (no '_r' suffix)."""
+    ct = ['a0', 'a2'] if counterterm_basis == 'DESIct' else ['c0', 'c2']
+    am_params = ['btd'] + ct + ['NP0', 'NP20', 'NP22']
+    if bispec:
+        am_params += ['NB0', 'MB0']
+    if reparam in ('full', 'hybrid'):
+        am_params = [f'{p}_r' for p in am_params]
+    return am_params
+
+
+def set_flat_linear_priors(pars, am_params, nz):
+    """Remove the priors of the linear parameters (flat, improper), so that
+    the full likelihood has the same minimum as the AM one with Jeffreys
+    priors, whose marginalised chi2 is the profile chi2 over those parameters."""
+    for p in am_params:
+        for iz in range(nz):
+            pars.update_prior(f'{p}_{iz}' if nz > 1 else p, None, None)
 
 
 def build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array):
@@ -295,7 +318,9 @@ if __name__ == "__main__":
     parser.add_argument('--kwinminB', type=float, default=0.0015, nargs='*')
     parser.add_argument('--kwinmaxB', type=float, default=0.3, nargs='*')
     parser.add_argument('--dkB', type=float, default=0.005)
-    parser.add_argument('--reparam', type=str, default='full', choices=['full', 'hybrid', 'none'])
+    parser.add_argument('--reparam', type=str, default='full', choices=['full', 'hybrid', 'jeffreys', 'none'],
+                        help="'jeffreys': reparametrise only the non-linear bias parameters (b1, b2d, bk2) and analytically "
+                             "marginalise the linear ones, in their original form, with a Jeffreys prior instead of Gaussian priors.")
     parser.add_argument('--de_model', type=str, default='lambda', choices=['lambda', 'w0wa', 'w0'])
     parser.add_argument('--rotatew0wa', action='store_true', help="Rotate the w0-wa in order to avoid the w0+wa>0 prior cut. Only used with --de_model=w0wa.")
     parser.add_argument('--counterterm_basis', type=str, default='DESIct', choices=['DESIct', 'Comet'])
@@ -314,7 +339,13 @@ if __name__ == "__main__":
     parser.add_argument('--minimize_mode', type=str, default='am_then_full', choices=['am_then_full', 'simplex_full'],
                         help="Only used with --minimize. 'am_then_full': MIGRAD on the analytically-marginalised likelihood, "
                              "then MIGRAD on the full likelihood starting from the AM MAP. 'simplex_full': SIMPLEX on the "
-                             "full likelihood as the first step, followed by MIGRAD on the full likelihood.")
+                             "full likelihood as the first step, followed by MIGRAD on the full likelihood. "
+                             "With --reparam jeffreys, the full likelihood has flat priors on the linear parameters, and "
+                             "'am_then_full' stops after the AM stage, which is already the MAP (see --jeffreys_check_full).")
+    parser.add_argument('--jeffreys_check_full', action='store_true',
+                        help="Only used with --reparam jeffreys, --minimize and --minimize_mode am_then_full. After the AM "
+                             "stage, also minimise the full likelihood with flat priors on the linear parameters, starting "
+                             "from the AM MAP. It should reproduce the AM minimum (a convergence check).")
     parser.add_argument('--hesse', action='store_true', help="Run HESSE after MIGRAD to get the covariance matrix. Only used with --minimize.")
     parser.add_argument('--seed_init', type=int, default=None, help="Random seed for drawing the Minuit starting point from the priors. Only used with --minimize.")
     parser.add_argument('--plot_contours', action='store_true', help="After the Nautilus chain finishes, plot the triangle/contour plot for the cosmological parameters and save it to --plot_dir. Not used with --minimize.")
@@ -325,6 +356,8 @@ if __name__ == "__main__":
                         "(set COMET_THREADS_PER_WORKER, see the top of this file).")
 
     args = parser.parse_args()
+    if args.jeffreys_check_full and not (args.reparam == 'jeffreys' and args.minimize and args.minimize_mode == 'am_then_full'):
+        parser.error("--jeffreys_check_full requires --reparam jeffreys, --minimize and --minimize_mode am_then_full.")
 
     print(f"Fitting tracer(s) {args.tracer_label} in region {args.region}")
     if args.mocktype or args.mocktype_cov or args.data_dir:
@@ -414,12 +447,7 @@ if __name__ == "__main__":
     z_array = z_array[sort_idx]
     observables = [observables[i] for i in sort_idx]
 
-    if args.counterterm_basis == 'DESIct':
-        am_params = ['btd_r', 'a0_r', 'a2_r', 'NP0_r', 'NP20_r', 'NP22_r']
-    elif args.counterterm_basis == 'Comet':
-        am_params = ['btd_r', 'c0_r', 'c2_r', 'NP0_r', 'NP20_r', 'NP22_r']
-    if args.bispec:
-        am_params += ['NB0_r', 'MB0_r']
+    am_params = get_am_params(args.counterterm_basis, args.bispec, args.reparam)
 
     pars = build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array)
 
@@ -427,7 +455,8 @@ if __name__ == "__main__":
     if args.de_model == 'w0wa' and not args.rotatew0wa:
         conditional_prior_fn = _w0wa_conditional_prior
 
-    likelihood = Likelihood(observables, pars, am_params=am_params, conditional_prior=conditional_prior_fn)
+    likelihood = Likelihood(observables, pars, am_params=am_params, jeffreys=args.reparam == 'jeffreys',
+                            conditional_prior=conditional_prior_fn)
 
     if args.time_likelihood:
         import numba
@@ -471,6 +500,8 @@ if __name__ == "__main__":
         # Skip the AM stage: run SIMPLEX on the full likelihood (all nuisance
         # parameters sampled directly) as the first step, then MIGRAD.
         pars_full = build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array)
+        if args.reparam == 'jeffreys':
+            set_flat_linear_priors(pars_full, am_params, len(z_array))
         likelihood_full = Likelihood(observables, pars_full, am_params=None, conditional_prior=conditional_prior_fn)
 
         minimizer_full = MinuitMinimizer(likelihood_full, seed_init=args.seed_init, verbose=True)
@@ -531,29 +562,41 @@ if __name__ == "__main__":
         minimizer.save(fn_minuit_am, best_fit=best_fit_am, uncertainties=uncertainties_am, metadata=run_metadata_am)
         print(f"AM best-fit result saved to {fn_minuit_am}")
 
-        # Stage 2: use the AM MAP (including the conditional MAP of the
-        # marginalised parameters) as the starting point for a minimization
+        # With Jeffreys priors the AM stage already gives the MAP: the marginalised
+        # chi2 is the profile chi2 over the linear parameters, and get_map
+        # returns their conditional MAP. The full-likelihood stage is then only
+        # an optional check, with flat priors on the linear parameters.
+        # Otherwise, stage 2: use the AM MAP (including the conditional MAP of
+        # the marginalised parameters) as the starting point for a minimization
         # of the full likelihood, where those parameters are sampled directly
         # instead of analytically marginalised.
-        pars_full = build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array)
-        likelihood_full = Likelihood(observables, pars_full, am_params=None, conditional_prior=conditional_prior_fn)
+        if args.reparam == 'jeffreys' and not args.jeffreys_check_full:
+            print("Jeffreys priors: the AM best fit is the MAP, skipping the full-likelihood stage.")
+        else:
+            pars_full = build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array)
+            if args.reparam == 'jeffreys':
+                set_flat_linear_priors(pars_full, am_params, len(z_array))
+            likelihood_full = Likelihood(observables, pars_full, am_params=None, conditional_prior=conditional_prior_fn)
 
-        minimizer_full = MinuitMinimizer(likelihood_full, seed_init=args.seed_init, verbose=True)
-        minimizer_full.set_starting_point(best_fit_am, errors_dict=uncertainties_am, reset_errors=True)
+            minimizer_full = MinuitMinimizer(likelihood_full, seed_init=args.seed_init, verbose=True)
+            minimizer_full.set_starting_point(best_fit_am, errors_dict=uncertainties_am, reset_errors=True)
 
-        t0 = time.time()
-        print("Starting full-likelihood minimization from the AM MAP...")
+            t0 = time.time()
+            print("Starting full-likelihood minimization from the AM MAP...")
 
-        minimizer_full.run(hesse=args.hesse, verbose=True, tol=0.8, iterate=100)
-        t1 = time.time()
-        print(f"Full-likelihood minimization finished in {(t1-t0)/60:.2f} minutes.")
+            minimizer_full.run(hesse=args.hesse, verbose=True, tol=0.8, iterate=100)
+            t1 = time.time()
+            print(f"Full-likelihood minimization finished in {(t1-t0)/60:.2f} minutes.")
+            if args.reparam == 'jeffreys':
+                print(f"Jeffreys check: AM minimum = {minimizer.m.fval:.4f}, full-likelihood minimum (flat linear priors) = "
+                      f"{minimizer_full.m.fval:.4f}, difference = {minimizer_full.m.fval - minimizer.m.fval:.4f}")
 
-        fn_minuit = fn + '_minuit_full'
-        run_metadata = {**vars(args), 'mocktypes_used': mocktypes_used, 'mocktypes_cov_used': mocktypes_cov_used,
-                         'elapsed_minutes': (t1 - t0) / 60, 'stage': 'full_likelihood',
-                         'am_map_file': fn_minuit_am}
-        minimizer_full.save(fn_minuit, metadata=run_metadata)
-        print(f"Full-likelihood best-fit result saved to {fn_minuit}")
+            fn_minuit = fn + '_minuit_full'
+            run_metadata = {**vars(args), 'mocktypes_used': mocktypes_used, 'mocktypes_cov_used': mocktypes_cov_used,
+                             'elapsed_minutes': (t1 - t0) / 60, 'stage': 'full_likelihood',
+                             'am_map_file': fn_minuit_am}
+            minimizer_full.save(fn_minuit, metadata=run_metadata)
+            print(f"Full-likelihood best-fit result saved to {fn_minuit}")
     else:
         fn_snap = fn + '_snap.hdf5'
 

@@ -55,9 +55,23 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
              de_model='lambda', freedom='max', b1_ref=2.109, sigmaR_ref=0.539, sigma1_eff=150/70 * 10**(1/3) * (1 + 0.8)**(1/2), fsat=0.13,
              bispec=False, free_Mnu=False, z_array=None, ns_times_Planck=10,
              use_Mpc=True, avirB_free=False, sigma_kind=None, rotatew0wa=False):
+    # reparam_option:
+    #   'full'     - all nuisance parameters reparametrised (bias with ap+sigma)
+    #   'hybrid'   - as 'full', but bias parameters rescaled by sigma only (no ap)
+    #   'jeffreys' - only the bias parameters entering the model non-linearly
+    #                (b1, b2d, bk2) are reparametrised (ap+sigma); the linear
+    #                ones keep their original form, to be analytically
+    #                marginalised with a Jeffreys prior (which is invariant
+    #                under their reparametrisation anyway)
+    #   None/'none' - no reparametrisation
 
     if isinstance(reparam_option, str) and reparam_option.lower() == 'none':
         reparam_option = None
+    reparam_options = ['full', 'hybrid', 'jeffreys']
+    if reparam_option is not None and reparam_option not in reparam_options:
+        raise ValueError(f"Invalid reparam_option: {reparam_option}. Must be one of {reparam_options} or None.")
+    # whether the linear nuisance parameters are reparametrised too
+    reparam_linear = reparam_option in ('full', 'hybrid')
 
     freedom_options = ['min', 'max', 'interm']
     if freedom not in freedom_options:
@@ -154,7 +168,7 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
 
     stochastic_mode = 'ap'
     counterterms_mode = f'ap+{sigma_kind}'
-    if reparam_option == 'full':
+    if reparam_option in ('full', 'jeffreys'):
         bias_mode = f'ap+{sigma_kind}'
     elif reparam_option == 'hybrid':
         bias_mode = sigma_kind
@@ -170,13 +184,15 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
 
     if reparam_option is not None:
         pars.use_reparametrization(bias_mode=bias_mode, counterterms_mode=counterterms_mode,
-                                    stochastic_mode=stochastic_mode, sigmaR_ref=active_sigmaR_ref)
+                                    stochastic_mode=stochastic_mode, sigmaR_ref=active_sigmaR_ref,
+                                    skip_linear_params=not reparam_linear)
 
     sub_rep = '_r' if reparam_option is not None else ''
 
     for iz in range(nz):
         sub_idz = f"_{iz}" if nz > 1 else ""
         subscript = sub_rep + sub_idz
+        subscript_linear = subscript if reparam_linear else sub_idz
         pars.update_parameter(f'b1{subscript}', 2., prior=(0.1, 8), prior_type='uniform', fixed=False)
         pars.update_parameter(f'b2d{subscript}', 0., prior=(0, 20), prior_type='gaussian', fixed=False)
         # if freedom == 'interm':
@@ -184,45 +200,45 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
         #     pars.update_parameter(f'b2d{subscript}', 0., prior=(0, 5), prior_type='gaussian', fixed=False)
         if freedom == 'max':
             pars.update_parameter(f'bk2{subscript}', bK2ref[iz], prior=(bK2ref[iz], 20), prior_type='gaussian', fixed=False)
-            pars.update_parameter(f'btd{subscript}', btdref[iz], prior=(btdref[iz], 80), prior_type='gaussian', fixed=False)
+            pars.update_parameter(f'btd{subscript_linear}', btdref[iz], prior=(btdref[iz], 80), prior_type='gaussian', fixed=False)
         elif freedom == 'interm':
             pars.update_parameter(f'bk2{subscript}', bK2ref[iz], prior=(bK2ref[iz], 20.), prior_type='gaussian', fixed=False)
-            pars.update_parameter(f'btd{subscript}', btdref[iz], prior=(btdref[iz], 1.), prior_type='gaussian', fixed=False)
+            pars.update_parameter(f'btd{subscript_linear}', btdref[iz], prior=(btdref[iz], 1.), prior_type='gaussian', fixed=False)
 
         pars.update_parameter(f'avir{sub_idz}', 5., prior=(0, 20./hconv), prior_type='uniform', fixed=False)
-        pars.update_parameter(f'NP0{subscript}', 0., prior=(0, gs['NP0_r'][iz]), prior_type='gaussian', fixed=False)
-        pars.update_parameter(f'NP20{subscript}', 0., prior=(0, gs['NP20_r'][iz]/hconv**2), prior_type='gaussian', fixed=False)
-        pars.update_parameter(f'NP22{subscript}', 0., prior=(0, gs['NP22_r'][iz]/hconv**2), prior_type='gaussian', fixed=False)
+        pars.update_parameter(f'NP0{subscript_linear}', 0., prior=(0, gs['NP0_r'][iz]), prior_type='gaussian', fixed=False)
+        pars.update_parameter(f'NP20{subscript_linear}', 0., prior=(0, gs['NP20_r'][iz]/hconv**2), prior_type='gaussian', fixed=False)
+        pars.update_parameter(f'NP22{subscript_linear}', 0., prior=(0, gs['NP22_r'][iz]/hconv**2), prior_type='gaussian', fixed=False)
 
         if counterterm_basis == 'DESIct':
-            pars.update_parameter(f'a0{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
-            pars.update_parameter(f'a2{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
+            pars.update_parameter(f'a0{subscript_linear}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
+            pars.update_parameter(f'a2{subscript_linear}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
             #pars.update_parameter(f'a4{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
-            pars.set_and_fix_param(f'a4{subscript}', 0.)
-            if reparam_option is not None:
+            pars.set_and_fix_param(f'a4{subscript_linear}', 0.)
+            if reparam_linear:
                 pars.set_and_fix_param(f'a4{sub_idz}', 0.)
         elif counterterm_basis == 'Comet':
-            pars.update_parameter(f'c0{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
-            pars.update_parameter(f'c2{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
+            pars.update_parameter(f'c0{subscript_linear}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
+            pars.update_parameter(f'c2{subscript_linear}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
             #pars.update_parameter(f'c4{subscript}', 0., prior=(0, stoch_scale), prior_type='gaussian', fixed=False)
-            pars.set_and_fix_param(f'c4{subscript}', 0.)
-            if reparam_option is not None:
+            pars.set_and_fix_param(f'c4{subscript_linear}', 0.)
+            if reparam_linear:
                 pars.set_and_fix_param(f'c4{sub_idz}', 0.)
 
         if bispec:
-            pars.update_parameter(f'NB0{subscript}', 0., prior=(0, 1.), prior_type='gaussian', fixed=False)
-            pars.update_parameter(f'MB0{subscript}', 0., prior=(0, 2.), prior_type='gaussian', fixed=False)
+            pars.update_parameter(f'NB0{subscript_linear}', 0., prior=(0, 1.), prior_type='gaussian', fixed=False)
+            pars.update_parameter(f'MB0{subscript_linear}', 0., prior=(0, 2.), prior_type='gaussian', fixed=False)
             if avirB_free:
                 pars.update_parameter(f'avirB{sub_idz}', 0., prior=(0, 20./hconv), prior_type='uniform', fixed=False)
             else:
                 # Default: tie avirB to avir instead of sampling it independently.
                 pars.set_derived_param(f'avirB{sub_idz}', partial(_copy_param, source_name=f'avir{sub_idz}'), exported=False)
         else:
-            pars.set_and_fix_param(f'NB0{subscript}', 0.)
-            pars.set_and_fix_param(f'MB0{subscript}', 0.)
+            pars.set_and_fix_param(f'NB0{subscript_linear}', 0.)
+            pars.set_and_fix_param(f'MB0{subscript_linear}', 0.)
             pars.set_and_fix_param(f'avirB{sub_idz}', 0.)
 
-            if reparam_option is not None:
+            if reparam_linear:
                 pars.set_and_fix_param(f'NB0{sub_idz}', 0.)
                 pars.set_and_fix_param(f'MB0{sub_idz}', 0.)
 
