@@ -13,3 +13,5 @@ postprocessing/out
 nb/
 
 blinding_test/
+# cached data: symlink or copy, see README
+/data

@@ -1,8 +1,11 @@
 import numpy as np
-from cosmoprimo import Cosmology, fiducial
 from mpi4py import MPI
 import sys
 from comet import comet
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import env  # noqa: F401
+from abacus_cosmologies import get_abacus_cosmology
 
 COSMOPRIMO_MAPPING = {
     'wb': 'omega_b',
@@ -16,15 +19,15 @@ COSMOPRIMO_MAPPING = {
     'Mnu': 'm_ncdm',
 }
 
-cosmo_fid = fiducial.AbacusSummit(name='000')
+cosmo_fid = get_abacus_cosmology('c000')
 # Fiducial values used for cosmological params not sampled in the chain.
 FIDUCIAL = {
-    'omega_b': cosmo_fid.get('omega_b'),
-    'omega_cdm': cosmo_fid.get('omega_cdm'),
-    'h': cosmo_fid.get('h'),
-    'n_s': cosmo_fid.get('n_s'),
-    'logA': cosmo_fid.get('logA'),
-    'm_ncdm': cosmo_fid.get('m_ncdm'),
+    'omega_b': cosmo_fid['omega_b'],
+    'omega_cdm': cosmo_fid['omega_cdm'],
+    'h': cosmo_fid['h'],
+    'n_s': cosmo_fid['n_s'],
+    'logA': cosmo_fid['logA'],
+    'm_ncdm': cosmo_fid['m_ncdm'],
 }
 
 def _map_logAs_to_As(logAs):
@@ -49,6 +52,9 @@ def map_to_cosmoprimo(names):
 
 
 def _compute_sigma8_cosmoprimo(params, engine, which='cb'):
+    # cosmoprimo (with CLASS/CAMB) is only needed for engine='class'/'camb';
+    # engine='comet' works without it.
+    from cosmoprimo import Cosmology
     cosmo = Cosmology(**FIDUCIAL | params, engine=engine)
     if which == 'm':
         return cosmo.sigma8_m

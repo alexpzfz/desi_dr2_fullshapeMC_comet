@@ -16,7 +16,7 @@ cosmologies = {'c000': {'wb': 0.02237, 'wc': 0.1200, 'h': 0.6736, 'As': 2.083, '
               'c003': {'wb': 0.02260, 'wc': 0.1291, 'h': 0.7160, 'As': 2.2438, 'ns': 0.9876, 'Mnu': 0.06, 'w0': -1.0, 'wa': 0.0},
               'c004': {'wb': 0.02237, 'wc': 0.1200, 'h': 0.6736, 'As': 1.7949, 'ns': 0.9649, 'Mnu': 0.06, 'w0': -1.0, 'wa': 0.0},}
 
-outdir = Path('/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cubic')
+outdir = env.DATA_DIR_CUBIC
 
 names_dict = {'LRG': 'LRG2', 'ELG': 'ELG1', 'QSO': 'QSO'}
 hod_options = ['fiducial', 'alternative']
@@ -41,7 +41,7 @@ def get_fn_cv(outdir, kind, tracer, zsnap, cosmo):
         return Path.joinpath(outdir, f'Bk_{tracer}_zsnap_{zsnap}_{cosmo}.txt')
 
 def get_obs_pk(tracer, hod_opt='fiducial', kmin=0.02, kmax=0.3, ell=[0, 2], nocov=False, cosmo='c000',
-               outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cubic/',
+               outdir=env.DATA_DIR_CUBIC,
                gausscov=False):
     outdir = Path(outdir)
     label = labels_dict[(tracer, hod_opt)]
@@ -100,7 +100,7 @@ def get_obs_pk(tracer, hod_opt='fiducial', kmin=0.02, kmax=0.3, ell=[0, 2], noco
 
 def get_obs_bk(tracer, hod_opt='fiducial', kmin=0.02, kmax=0.3,
                ell=[(0, 0, 0), (2, 0, 2)], nocov=False, cosmo='c000',
-               outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cubic/'):
+               outdir=env.DATA_DIR_CUBIC):
     outdir = Path(outdir)
     label = labels_dict[(tracer, hod_opt)]
     if cosmo == 'c000':
@@ -131,7 +131,7 @@ def get_obs_bk(tracer, hod_opt='fiducial', kmin=0.02, kmax=0.3,
 
 def get_obs_pk_bk(tracer, hod_opt='fiducial', kminP=0.01, kmaxP=0.3, ellP=[0, 2],
                   kminB=0.01, kmaxB=0.2, ellB=[(0, 0, 0), (2, 0, 2)], cosmo='c000',
-                  outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cubic/'):
+                  outdir=env.DATA_DIR_CUBIC):
     obs_pk = get_obs_pk(tracer, hod_opt, kmin=kminP, kmax=kmaxP, ell=ellP, nocov=True, cosmo=cosmo, outdir=outdir)
     obs_bk = get_obs_bk(tracer, hod_opt, kmin=kminB, kmax=kmaxB, ell=ellB, nocov=True, cosmo=cosmo, outdir=outdir)
     outdir = Path(outdir)

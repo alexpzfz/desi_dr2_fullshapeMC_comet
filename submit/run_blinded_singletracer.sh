@@ -12,7 +12,7 @@
 
 set -u
 
-REPO_ROOT="/global/u2/a/alexpzfz/desi_dr2_fullshapeMC_comet"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 BLIND_TAG=blind1
 MOCKTYPE="abacus-hf-dr2-v2-altmtl-${BLIND_TAG}"
@@ -63,7 +63,8 @@ if [ ! -d "$DATA_DIR" ]; then
     exit 1
 fi
 
-cmd=(sbatch --array="$array" --time=04:00:00 --cpus-per-task=32
+mkdir -p "$REPO_ROOT/outputs/logs"
+cmd=(sbatch --output="$REPO_ROOT/outputs/logs/%x_%j.out" --array="$array" --time=04:00:00 --cpus-per-task=32
      -- "$REPO_ROOT/submit/submit_cutsky_abacushf.sh"
      --mocktype "$MOCKTYPE"
      --data_dir "$DATA_DIR"

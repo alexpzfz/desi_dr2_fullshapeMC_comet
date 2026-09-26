@@ -1,8 +1,11 @@
 import numpy as np
-from cosmoprimo import Cosmology, fiducial
 from mpi4py import MPI
 import sys
 from comet import comet
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import env  # noqa: F401
+from abacus_cosmologies import get_abacus_cosmology
 
 COSMOPRIMO_MAPPING = {
     'wb': 'omega_b',
@@ -16,15 +19,15 @@ COSMOPRIMO_MAPPING = {
     'Mnu': 'm_ncdm',
 }
 
-cosmo_fid = fiducial.AbacusSummit(name='000')
+cosmo_fid = get_abacus_cosmology('c000')
 # Fiducial values used for cosmological params not sampled in the chain.
 FIDUCIAL = {
-    'omega_b': cosmo_fid.get('omega_b'),
-    'omega_cdm': cosmo_fid.get('omega_cdm'),
-    'h': cosmo_fid.get('h'),
-    'n_s': cosmo_fid.get('n_s'),
-    'logA': cosmo_fid.get('logA'),
-    'm_ncdm': cosmo_fid.get('m_ncdm'),
+    'omega_b': cosmo_fid['omega_b'],
+    'omega_cdm': cosmo_fid['omega_cdm'],
+    'h': cosmo_fid['h'],
+    'n_s': cosmo_fid['n_s'],
+    'logA': cosmo_fid['logA'],
+    'm_ncdm': cosmo_fid['m_ncdm'],
 }
 
 def _map_logAs_to_As(logAs):
@@ -49,6 +52,9 @@ def map_to_cosmoprimo(names):
 
 
 def _compute_sigma8_cosmoprimo(params, engine, which='cb'):
+    # cosmoprimo (with CLASS/CAMB) is only needed for engine='class'/'camb';
+    # engine='comet' works without it.
+    from cosmoprimo import Cosmology
     cosmo = Cosmology(**FIDUCIAL | params, engine=engine)
     if which == 'm':
         return cosmo.sigma8_m
@@ -119,13 +125,13 @@ def add_Omega_m(samples, comm=None):
     n = samples.samples.shape[0]
     
     # Default to fiducial values if parameters are not in the chain
-    wc = cosmo_fid.get('omega_cdm')
-    wb = cosmo_fid.get('omega_b')
-    h = cosmo_fid.get('h')
+    wc = cosmo_fid['omega_cdm']
+    wb = cosmo_fid['omega_b']
+    h = cosmo_fid['h']
     
     # Get neutrino mass (handle if it's an array/tuple in some cosmoprimo versions)
-    mnu = cosmo_fid.get('m_ncdm')
-    omega_nu = cosmo_fid.get('omega_ncdm')
+    mnu = cosmo_fid['m_ncdm']
+    omega_nu = cosmo_fid['omega_ncdm']
     if isinstance(mnu, (list, tuple, np.ndarray)):
         mnu = np.sum(mnu)
     
@@ -198,7 +204,7 @@ def export_to_text(samples, out_fn, comm=None, engine='class', which='cb'):
     if 'h' in samples.index:
         h = samples.samples[:, samples.index['h']]
     else:
-        h = np.full(n, cosmo_fid.get('h'))
+        h = np.full(n, cosmo_fid['h'])
 
     # # get physical baryon fraction Omega_b = omega_b / h^2
     # if 'Omega_b' in samples.index:
@@ -209,14 +215,14 @@ def export_to_text(samples, out_fn, comm=None, engine='class', which='cb'):
     #     elif 'omega_b' in samples.index:
     #         wb = samples.samples[:, samples.index['omega_b']]
     #     else:
-    #         wb = np.full(n, cosmo_fid.get('omega_b'))
+    #         wb = np.full(n, cosmo_fid['omega_b'])
     #     Omega_b = wb / h**2
     
     # get sigma8
     if 'sigma8' in samples.index:
         sigma8 = samples.samples[:, samples.index['sigma8']]
     else:
-        sigma8 = np.full(n, cosmo_fid.get('sigma8'))
+        sigma8 = np.full(n, cosmo_fid['sigma8_cb'])
 
     w0wa_in_chain = False    
     if 'w0' in samples.index:

@@ -8,7 +8,14 @@
 #SBATCH --account=desi
 #SBATCH --array=0-5
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve the repo root. Slurm runs a spool copy of this script, so under
+# sbatch BASH_SOURCE points at the spool dir; ask Slurm for the original path.
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    _script=$(scontrol show job "$SLURM_JOB_ID" | sed -n 's/^ *Command=\([^ ]*\).*/\1/p' | head -n 1)
+else
+    _script="${BASH_SOURCE[0]}"
+fi
+REPO_ROOT="$(cd "$(dirname "$_script")/.." && pwd)"
 
 dks=(0.005 0.01)
 regions=(SGC NGC GCcomb)
@@ -34,7 +41,8 @@ region=${regions[$((j%3))]}
 
 set --
 
-source /global/common/software/desi/users/adematti/cosmodesi_environment.sh
+# NERSC-only software environment.
+if [ -n "${NERSC_HOST:-}" ]; then source /global/common/software/desi/users/adematti/cosmodesi_environment.sh; fi
 export OMP_NUM_THREADS=1
 srun -n 1 -c 8 --cpu-bind=cores python -u "$REPO_ROOT/src/fit_cutsky_secondgen.py" \
     --tracer LRG \

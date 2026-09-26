@@ -7,16 +7,16 @@ import env  # noqa: F401
 import plot_utils as pu
 from fit_cutsky_abacushf import get_fn
 from postprocess import export_to_text
-from cosmoprimo.fiducial import AbacusSummit
+from abacus_cosmologies import get_abacus_cosmology
 from mpi4py import MPI
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 
 
-cosmo = AbacusSummit(name=0)
-markers = {'Omega_m': cosmo.get('Omega_m'),
-           'Omega_b': cosmo.get('Omega_b'),
-           'sigma8': cosmo.sigma8_cb,}
+cosmo = get_abacus_cosmology('c000')
+markers = {'Omega_m': cosmo['Omega_m'],
+           'Omega_b': cosmo['Omega_b'],
+           'sigma8': cosmo['sigma8_cb'],}
 
 out_dir = str(env.CHAINS_DIR)
 

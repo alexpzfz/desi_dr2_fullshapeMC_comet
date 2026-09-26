@@ -6,7 +6,14 @@
 #SBATCH --job-name=mc2f
 #SBATCH --account=desi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve the repo root. Slurm runs a spool copy of this script, so under
+# sbatch BASH_SOURCE points at the spool dir; ask Slurm for the original path.
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    _script=$(scontrol show job "$SLURM_JOB_ID" | sed -n 's/^ *Command=\([^ ]*\).*/\1/p' | head -n 1)
+else
+    _script="${BASH_SOURCE[0]}"
+fi
+REPO_ROOT="$(cd "$(dirname "$_script")/.." && pwd)"
 
 # Map each array index to one tracer/z bin.
 #zranges=("LRG 0.4 0.6" "LRG 0.6 0.8" "LRG 0.8 1.1" "ELG_LOP 0.8 1.1" "ELG_LOP 1.1 1.6" "QSO 0.8 2.1")

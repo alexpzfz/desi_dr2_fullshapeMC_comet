@@ -17,11 +17,11 @@ for c in cosmo_list:
 # True Omega_m/sigma8 for each fiducial cosmology, so that plot_fob_fom (which
 # looks these up from cosmo_dict) also works for the {h, Omega_m, sigma8}
 # parameter space, not just the directly-sampled cosmological parameters.
-from cosmoprimo.fiducial import AbacusSummit as _AbacusSummit
+from abacus_cosmologies import get_abacus_cosmology
 for c in cosmo_list:
-    _abacus = _AbacusSummit(name=c[1:])
-    cosmo_dict[c]['Omega_m'] = _abacus.get('Omega_m')
-    cosmo_dict[c]['sigma8'] = _abacus.sigma8_cb
+    _abacus = get_abacus_cosmology(c)
+    cosmo_dict[c]['Omega_m'] = _abacus['Omega_m']
+    cosmo_dict[c]['sigma8'] = _abacus['sigma8_cb']
 
 colors = {'c000': 'blue', 'c001': 'orange', 'c002': 'green', 'c004': 'red'}
 tracer_colors = {('BGS_ANY-02', (0.1, 0.4)):'yellowgreen','BGS': 'yellowgreen', 'BGS_BRIGHT-21.5': 'yellowgreen', ('BGS_BRIGHT-21.5', (0.1, 0.4)): 'yellowgreen', ('BGS_BRIGHT-21.35', (0.1, 0.4)): 'yellowgreen',

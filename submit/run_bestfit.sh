@@ -1,7 +1,7 @@
 #!/usr/bin/bash
-REPO_ROOT="/global/u2/a/alexpzfz/desi_dr2_fullshapeMC_comet"
-OUTDIR=/global/homes/a/alexpzfz/desi_dr2_fullshapeMC_comet/outputs/chains/best_fits
-LOGDIR=/global/homes/a/alexpzfz/desi_dr2_fullshapeMC_comet/outputs/logs/best_fits
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTDIR="$REPO_ROOT/outputs/chains/best_fits"
+LOGDIR="$REPO_ROOT/outputs/logs/best_fits"
 #create log dir if it doesn't exist
 mkdir -p $LOGDIR
 #de_models=('lambda' 'w0wa')

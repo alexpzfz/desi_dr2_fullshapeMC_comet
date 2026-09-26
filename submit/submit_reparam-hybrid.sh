@@ -8,9 +8,17 @@
 #SBATCH --account=desi
 #SBATCH --array=0,1,2,4
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve the repo root. Slurm runs a spool copy of this script, so under
+# sbatch BASH_SOURCE points at the spool dir; ask Slurm for the original path.
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    _script=$(scontrol show job "$SLURM_JOB_ID" | sed -n 's/^ *Command=\([^ ]*\).*/\1/p' | head -n 1)
+else
+    _script="${BASH_SOURCE[0]}"
+fi
+REPO_ROOT="$(cd "$(dirname "$_script")/.." && pwd)"
 
-source /global/common/software/desi/users/adematti/cosmodesi_environment.sh
+# NERSC-only software environment.
+if [ -n "${NERSC_HOST:-}" ]; then source /global/common/software/desi/users/adematti/cosmodesi_environment.sh; fi
 export OMP_NUM_THREADS=1
 cosmolist=(c000 c001 c002 c003 c004)
 cosmo=${cosmolist[$SLURM_ARRAY_TASK_ID]}

@@ -11,7 +11,7 @@ import env  # noqa: F401
 
 import plot_utils as pu
 from postprocess import export_to_text
-from cosmoprimo.fiducial import AbacusSummit
+from abacus_cosmologies import get_abacus_cosmology
 from mpi4py import MPI
 
 
@@ -25,11 +25,11 @@ plt.rc('font', family='serif')
 
 def get_true_markers(cosmo_name):
     """Return extra reference markers for the chosen AbacusSummit cosmology."""
-    abacus = AbacusSummit(name=cosmo_name[1:])
+    abacus = get_abacus_cosmology(cosmo_name)
     return {
-        'Omega_m': abacus.get('Omega_m'),
-        'Omega_b': abacus.get('Omega_b'),
-        'sigma8': abacus.sigma8_cb,
+        'Omega_m': abacus['Omega_m'],
+        'Omega_b': abacus['Omega_b'],
+        'sigma8': abacus['sigma8_cb'],
     }
 
 

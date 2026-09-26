@@ -5,12 +5,18 @@
 #SBATCH --constraint=cpu
 #SBATCH --job-name=post_sc
 #SBATCH --account=desi
-#SBATCH --output=/global/u2/a/alexpzfz/desi_dr2_fullshapeMC_comet/outputs/logs/%x_%j.out
+# --output is relative to where sbatch is run: submit from the repo root, or
+# pass --output explicitly (the run_*.sh wrappers do).
+#SBATCH --output=outputs/logs/%x_%j.out
 
-# Hardcoded (not derived from BASH_SOURCE): Slurm copies this script into its
-# spool dir before running it, so BASH_SOURCE points at the spool copy on the
-# compute node, not this file's real location.
-REPO_ROOT="/global/u2/a/alexpzfz/desi_dr2_fullshapeMC_comet"
+# Resolve the repo root. Slurm runs a spool copy of this script, so under
+# sbatch BASH_SOURCE points at the spool dir; ask Slurm for the original path.
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    _script=$(scontrol show job "$SLURM_JOB_ID" | sed -n 's/^ *Command=\([^ ]*\).*/\1/p' | head -n 1)
+else
+    _script="${BASH_SOURCE[0]}"
+fi
+REPO_ROOT="$(cd "$(dirname "$_script")/.." && pwd)"
 
 export OMP_NUM_THREADS=1
 

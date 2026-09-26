@@ -1,6 +1,8 @@
 #!/usr/bin/bash
 
-OUTDIR=/global/homes/a/alexpzfz/desi_dr2_fullshapeMC_comet/outputs/chains/scale_config
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTDIR="$REPO_ROOT/outputs/chains/scale_config"
+mkdir -p "$REPO_ROOT/outputs/logs"
 de_models=('w0wa')
 units_ops=('' '--mpc_h')
 
@@ -26,7 +28,7 @@ for units_op in "${units_ops[@]}"; do
         fi
         echo "Submitting job for de_model=$de_model, units_op=$units_op, minimize_mode=$minimize_mode", $rotstr
 
-        sbatch --qos=shared --time=48:00:00 --cpus-per-task=$N_THREADS --job-name=mc2f_min -- submit_cutsky_abacushf.sh \
+        sbatch --output="$REPO_ROOT/outputs/logs/%x_%j.out" --qos=shared --time=48:00:00 --cpus-per-task=$N_THREADS --job-name=mc2f_min -- "$REPO_ROOT/submit/submit_cutsky_abacushf.sh" \
          --tracer_label BGS LRG1 LRG2 LRG3 ELG2 \
          --bispec --kmaxP 0.35 0.3 --kmaxB 0.2 0.1 --outdir $OUTDIR \
          --de_model $de_model ${units_op} --extra "bispec_ext" --zeff_choice "zgeom" \

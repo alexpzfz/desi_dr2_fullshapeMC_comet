@@ -39,14 +39,10 @@ import numpy as np
 import jax
 jax.config.update('jax_enable_x64', True)
 
-import lsstypes as types
-from clustering_statistics.tools import get_stats_fn
 import matplotlib.pyplot as plt
-from lsstypes import ObservableTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import env  # noqa: F401
-sys.path.insert(0, "/global/homes/a/alexpzfz/comet-emu")
 from observables import PowerSpectrumMultipoles, BispectrumSugiyamaMultipoles, JointObservable
 from params import Params
 from likelihood import Likelihood

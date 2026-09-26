@@ -1,16 +1,38 @@
 import os
+import functools
 import numpy as np
 from pathlib import Path
-import lsstypes as types
-from clustering_statistics.tools import get_stats_fn
-from clustering_statistics.box_tools import get_box_stats_fn
 import matplotlib.pyplot as plt
-from lsstypes import ObservableTree
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import env  # noqa: F401
 from observables import PowerSpectrumMultipoles, BispectrumSugiyamaMultipoles, JointObservable
 from utils import cut_cov, cut_window
+
+
+# lsstypes and clustering_statistics (desi-clustering) are only needed to read
+# the raw measurements on NERSC, i.e. the uncached (cached=False) path and the
+# cache-building __main__ below. They are imported lazily so that the cached
+# path works anywhere without them.
+def _import_raw_deps():
+    global types, ObservableTree, get_stats_fn, get_box_stats_fn
+    try:
+        import lsstypes as types
+        from lsstypes import ObservableTree
+        from clustering_statistics.tools import get_stats_fn
+        from clustering_statistics.box_tools import get_box_stats_fn
+    except ImportError as e:
+        raise ImportError("Reading the raw (uncached) measurements requires lsstypes and "
+                          "clustering_statistics (desi-clustering), and the NERSC filesystem. "
+                          "Use cached=True to read the cached data in env.DATA_DIR instead.") from e
+
+
+def _needs_raw_deps(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        _import_raw_deps()
+        return func(*args, **kwargs)
+    return wrapper
 
 
 stats_dir = Path('/global/cfs/cdirs/desi/science/cai/desi-clustering/dr2/summary_statistics/')
@@ -20,6 +42,7 @@ project_bgs = 'full_shape/fiber_assignment_systematics'
 stats_dir_box = Path('/global/cfs/cdirs/desi/science/cai/desi-clustering/dr2/summary_statistics/mock_challenge/')
 stats_dir_ezmocks = Path('/global/cfs/cdirs/desi/science/gqc/y3_fits/mockchallenge_abacus/measurements/EZmocks_lsstypes/')
 
+@_needs_raw_deps
 def count_available_mocks(tracer, zrange, region, mocktype, kind='mesh2_spectrum', stats_dir=stats_dir, project=project):
     count = 0
     for imock in range(1000):
@@ -33,6 +56,7 @@ def count_available_mocks(tracer, zrange, region, mocktype, kind='mesh2_spectrum
     return count
 
 
+@_needs_raw_deps
 def get_pk(tracer, zrange=None, region=None, mocktype=None, imock=None,
            zsnap=None, cosmo=None, hod=None, dk=0.005, stats_dir=stats_dir, project=project):
     if not 'cubic' in mocktype:
@@ -53,6 +77,7 @@ def get_pk(tracer, zrange=None, region=None, mocktype=None, imock=None,
         pspectrum = pspectrum.select(k=slice(0, None, 10))
     return pspectrum
 
+@_needs_raw_deps
 def get_bk(tracer, zrange=None, region=None, mocktype=None, imock=None,
            zsnap=None, cosmo=None, hod=None, dk=0.005, stats_dir=stats_dir, project=project):
     if not 'cubic' in mocktype:
@@ -72,18 +97,21 @@ def get_bk(tracer, zrange=None, region=None, mocktype=None, imock=None,
         bk = bk.select(k=slice(0, None, 2))
     return bk
 
+@_needs_raw_deps
 def get_mean_pk(tracer, zrange=None, region=None, mocktype=None, zsnap=None, cosmo=None, hod=None, dk=0.005, stats_dir=stats_dir, project=project):
     pks = []
     for imock in range(25):
         pks.append(get_pk(tracer, zrange, region, mocktype, imock, zsnap=zsnap, cosmo=cosmo, hod=hod, dk=dk, stats_dir=stats_dir, project=project))
     return ObservableTree.mean(pks)
 
+@_needs_raw_deps
 def get_mean_bk(tracer, zrange=None, region=None, mocktype=None, zsnap=None, cosmo=None, hod=None, dk=0.005, stats_dir=stats_dir, project=project):
     bks = []
     for imock in range(25):
         bks.append(get_bk(tracer, zrange, region, mocktype, imock, zsnap=zsnap, cosmo=cosmo, hod=hod, dk=dk, stats_dir=stats_dir, project=project))
     return ObservableTree.mean(bks)
 
+@_needs_raw_deps
 def get_cov_pk(tracer, zrange=None, region=None, mocktype=None, zsnap=None, cosmo=None, hod=None, rang=(0, 1000), dk=0.005, stats_dir=stats_dir, project=project):
     pks = []
     for imock in range(*rang):
@@ -95,6 +123,7 @@ def get_cov_pk(tracer, zrange=None, region=None, mocktype=None, zsnap=None, cosm
     cov.attrs['n_mocks'] = len(pks)
     return cov
 
+@_needs_raw_deps
 def get_cov_bk(tracer, zrange=None, region=None, mocktype=None, zsnap=None, cosmo=None, hod=None, rang=(0, 1000), dk=0.005, stats_dir=stats_dir, project=project):
     bks = []
     for imock in range(*rang):
@@ -106,6 +135,7 @@ def get_cov_bk(tracer, zrange=None, region=None, mocktype=None, zsnap=None, cosm
     cov.attrs['n_mocks'] = len(bks)
     return cov
 
+@_needs_raw_deps
 def get_cov_pk_bk_preprocessed(tracer, zrange=None, region=None, mocktype=None, zsnap=None, cosmo=None, hod=None, rang=(0, 1000), dkP=0.005, dkB=0.005,
                   kminP=0.01, kmaxP=0.4, kminB=0.01, kmaxB=0.2, ellP=[0, 2], ellB=['000', '202'], stats_dir=stats_dir, project=project):
     observables = []
@@ -140,6 +170,7 @@ def get_cov_pk_bk_preprocessed(tracer, zrange=None, region=None, mocktype=None, 
     cov.attrs['n_mocks'] = len(observables)
     return cov
 
+@_needs_raw_deps
 def get_cov_pk_bk(tracer, zrange=None, region=None, mocktype=None, zsnap=None, cosmo=None, hod=None, rang=(0, 1000), dkP=0.005, dkB=0.005, stats_dir=stats_dir, project=project):
     observables = []
     for imock in range(*rang):
@@ -154,6 +185,7 @@ def get_cov_pk_bk(tracer, zrange=None, region=None, mocktype=None, zsnap=None, c
     cov.attrs['n_mocks'] = len(observables)
     return cov
 
+@_needs_raw_deps
 def get_window_pk(tracer, zrange, region, mocktype, stats_dir=stats_dir, project=project):
     fn = get_stats_fn(stats_dir=stats_dir, project=project, kind='window_mesh2_spectrum', 
                       version=mocktype, tracer=tracer, zrange=zrange, region=region,
@@ -161,6 +193,7 @@ def get_window_pk(tracer, zrange, region, mocktype, stats_dir=stats_dir, project
     window = types.read(fn)
     return window
 
+@_needs_raw_deps
 def get_window_bk(tracer, zrange, region, mocktype, stats_dir=stats_dir, project=project):
     fn = get_stats_fn(stats_dir=stats_dir, project=project, kind='window_mesh3_spectrum', 
                       version=mocktype, tracer=tracer, zrange=zrange, region=region,
@@ -260,7 +293,7 @@ def get_obs_pk_raw(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
 
 def get_obs_pk_cached(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
                      kwinmin=0.0, kwinmax=0.5, ell=[0, 2], ellwin=[0, 2, 4], nocov=False, mocktype_cov='holi-v3-altmtl', dk=0.005,
-                     outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/',
+                     outdir=env.DATA_DIR_CUTSKY,
                      use_Mpc=True):
     label = tracer_labels[tracer][zrange]
     outdir = Path(outdir)
@@ -308,7 +341,7 @@ def get_obs_pk_cached(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
 
 def get_obs_pk(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
                kwinmin=0.0, kwinmax=0.5, ell=[0, 2], ellwin=[0, 2, 4], nocov=False, mocktype_cov='holi-v3-altmtl', dk=0.005,
-               cached=True, outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/',
+               cached=True, outdir=env.DATA_DIR_CUTSKY,
                use_Mpc=True):
     if cached:
         return get_obs_pk_cached(tracer, zrange, region, mocktype, kmin=kmin, kmax=kmax,
@@ -323,7 +356,7 @@ def get_obs_bk_cached(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
                      kwinmin=0.0, kwinmax=0.5, ell=[(0, 0, 0), (2, 0, 2)],
                      ellwin=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)],
                      nocov=False, mocktype_cov='holi-v3-altmtl', dk=0.005, slice_winB=None,
-                     outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/',
+                     outdir=env.DATA_DIR_CUTSKY,
                      use_Mpc=True):
     label = tracer_labels[tracer][zrange]
     outdir = Path(outdir)
@@ -393,7 +426,7 @@ def get_obs_pk_bk_cached(tracer, zrange, region, mocktype, kminP=0.01, kmaxP=0.3
                             kwinminP=0.0, kwinmaxP=0.5, ellwinP=[0, 2, 4], kminB=0.01, kmaxB=0.2,
                             kwinminB=0.0, kwinmaxB=0.5, ellwinB=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)],
                             mocktype_cov='holi-v3-altmtl', dkP=0.005, dkB=0.005, slice_winB_theory=2,
-                            outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/',
+                            outdir=env.DATA_DIR_CUTSKY,
                             use_Mpc=True):
     obs_pk = get_obs_pk_cached(tracer, zrange, region, mocktype, kmin=kminP, kmax=kmaxP,
                             kwinmin=kwinminP, kwinmax=kwinmaxP, ell=ellP,ellwin=ellwinP,
@@ -487,7 +520,7 @@ def get_obs_pk_bk(tracer, zrange, region, mocktype, kminP=0.01, kmaxP=0.3, ellP=
                     kwinminP=0.0, kwinmaxP=0.5, ellwinP=[0, 2, 4], kminB=0.01, kmaxB=0.2,
                     kwinminB=0.0, kwinmaxB=0.5, ellwinB=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)],
                     mocktype_cov='holi-v3-altmtl', dkP=0.005, dkB=0.005, slice_winB_theory=2,
-                    cached=True, outdir='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/',
+                    cached=True, outdir=env.DATA_DIR_CUTSKY,
                     use_Mpc=True):
     if cached:
         return get_obs_pk_bk_cached(tracer, zrange, region, mocktype, kminP=kminP, kmaxP=kmaxP,
@@ -523,10 +556,11 @@ if __name__ == "__main__":
     parser.add_argument('--dkB', type=float, default=0.005)
     parser.add_argument('--slice_winB', type=int, default=None)
 
-    parser.add_argument('--outdir', type=str, default='/global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge/cutsky/')
+    parser.add_argument('--outdir', type=str, default=str(env.DATA_DIR_CUTSKY))
     parser.add_argument('--overwrite', action='store_true')
 
     args = parser.parse_args()
+    _import_raw_deps()
 
     if 'cubic' not in args.mocktype:
         for tracer in tracers:

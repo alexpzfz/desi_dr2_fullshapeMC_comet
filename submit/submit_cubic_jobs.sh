@@ -1,6 +1,7 @@
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main
+# NERSC-only software environment.
+if [ -n "${NERSC_HOST:-}" ]; then source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main; fi
 export OMP_NUM_THREADS=1
 
 array=0-2 #LRG, ELG, QSO
