@@ -41,7 +41,7 @@ def _compute_sigma8_ref(emu, z_array):
 def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
              de_model='lambda', freedom='max', b1_ref=2.109, sigmaR_ref=0.539, sigma1_eff=150/70 * 10**(1/3) * (1 + 0.8)**(1/2), fsat=0.13,
              bispec=False, free_Mnu=False, z_array=None, ns_times_Planck=10,
-             use_Mpc=True, avirB_free=False):
+             use_Mpc=True, avirB_free=False, sigma_kind=None):
 
     if isinstance(reparam_option, str) and reparam_option.lower() == 'none':
         reparam_option = None
@@ -73,15 +73,23 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
     # (sigma_12 or sigma_8) it is normalized against, which in turn depends on
     # the working units (Mpc uses sigma_12, Mpc/h uses sigma_8).
     if use_Mpc:
-        sigma_kind = 'sigma_12'
+        sigma_kind_ = 'sigma_12'
         active_sigmaR_ref = _to_nz_array(sigmaR_ref, 'sigmaR_ref')
     else:
-        sigma_kind = 'sigma_8'
+        sigma_kind_ = 'sigma_8'
         # if sigma8_ref is not None:
         #     active_sigmaR_ref = _to_nz_array(sigma8_ref, 'sigma8_ref')
         # else:
         #     active_sigmaR_ref = _compute_sigma8_ref(emu, z_array)
         active_sigmaR_ref = _to_nz_array(sigmaR_ref, 'sigmaR_ref')
+    if sigma_kind is None:
+        sigma_kind = sigma_kind_
+        print(f"Using default sigma_kind={sigma_kind} based on use_Mpc={use_Mpc}")
+    else:
+        if sigma_kind not in ['sigma_8', 'sigma_12']:
+            raise ValueError(f"Invalid sigma_kind: {sigma_kind}. Must be 'sigma_8' or 'sigma_12'.")
+        print(f"Using user-specified sigma_kind={sigma_kind} (use_Mpc={use_Mpc})")
+
     coev_params = ['bK2', 'btd'] if freedom == 'min' else []
     pars = Params(emu, coev_params=coev_params, z_array=z_array)
     #pars = Params(emu, coev_params=coev_params)
