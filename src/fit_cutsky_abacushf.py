@@ -78,7 +78,7 @@ def _fmt_float(x):
 
 def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, kmaxB=None,
            de_model='lambda', reparam_option='full', free_Mnu=False, outdir=str(env.CHAINS_DIR), extra=None,
-           counterterm_basis='DESIct', avirB_free=False, use_Mpc=True, zeff_choice='zsnap', sigma_kind=None):
+           counterterm_basis='DESIct', avirB_free=False, use_Mpc=True, zeff_choice='zsnap', sigma_kind=None, rotatew0wa=False):
 
     if not isinstance(tracer_label, list):
         tracer_label = [tracer_label] 
@@ -116,6 +116,9 @@ def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, km
         fn += '_Mpch'
     if sigma_kind is not None:
         fn += f'_{sigma_kind}'
+
+    if rotatew0wa:
+        fn += '_rotatew0wa'
 
     if extra is not None:
         fn += f'_{extra}'
@@ -170,7 +173,7 @@ def build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array):
                      freedom=args.freedom, free_Mnu=args.free_Mnu,
                      b1_ref=b1_ref, sigmaR_ref=sigmaR_ref, sigma1_eff=sigma1_eff, fsat=fsat,
                      z_array=z_array, counterterm_basis=args.counterterm_basis,
-                     avirB_free=args.avirB_free, use_Mpc=not args.mpc_h, sigma_kind=args.sigma_kind)
+                     avirB_free=args.avirB_free, use_Mpc=not args.mpc_h, sigma_kind=args.sigma_kind, rotatew0wa=args.rotatew0wa)
     if args.bispec:
         pars.emu.bispec_kwargs['sugiyama']['quad_deg'] = (7, 16, 5)
         pars.emu.bispec_kwargs['sugiyama']['mu12_transform'] = 'k3'
@@ -294,6 +297,7 @@ if __name__ == "__main__":
     parser.add_argument('--dkB', type=float, default=0.005)
     parser.add_argument('--reparam', type=str, default='full', choices=['full', 'hybrid', 'none'])
     parser.add_argument('--de_model', type=str, default='lambda', choices=['lambda', 'w0wa', 'w0'])
+    parser.add_argument('--rotatew0wa', action='store_true', help="Rotate the w0-wa in order to avoid the w0+wa>0 prior cut. Only used with --de_model=w0wa.")
     parser.add_argument('--counterterm_basis', type=str, default='DESIct', choices=['DESIct', 'Comet'])
     parser.add_argument('--freedom', type=str, default='interm', choices=['min', 'max', 'interm'])
     parser.add_argument('--free_Mnu', action='store_true')
@@ -307,6 +311,10 @@ if __name__ == "__main__":
     parser.add_argument('--n_live', type=int, default=3000)
     parser.add_argument('--extra', type=str, default=None, help="Extra string to add to output filename for uniqueness (e.g. to distinguish different sampler settings).")
     parser.add_argument('--minimize', action='store_true', help="Run an iMinuit MIGRAD minimization instead of Nautilus nested sampling.")
+    parser.add_argument('--minimize_mode', type=str, default='am_then_full', choices=['am_then_full', 'simplex_full'],
+                        help="Only used with --minimize. 'am_then_full': MIGRAD on the analytically-marginalised likelihood, "
+                             "then MIGRAD on the full likelihood starting from the AM MAP. 'simplex_full': SIMPLEX on the "
+                             "full likelihood as the first step, followed by MIGRAD on the full likelihood.")
     parser.add_argument('--hesse', action='store_true', help="Run HESSE after MIGRAD to get the covariance matrix. Only used with --minimize.")
     parser.add_argument('--seed_init', type=int, default=None, help="Random seed for drawing the Minuit starting point from the priors. Only used with --minimize.")
     parser.add_argument('--plot_contours', action='store_true', help="After the Nautilus chain finishes, plot the triangle/contour plot for the cosmological parameters and save it to --plot_dir. Not used with --minimize.")
@@ -415,7 +423,9 @@ if __name__ == "__main__":
 
     pars = build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array)
 
-    conditional_prior_fn = _w0wa_conditional_prior if args.de_model == 'w0wa' else None
+    conditional_prior_fn = None
+    if args.de_model == 'w0wa' and not args.rotatew0wa:
+        conditional_prior_fn = _w0wa_conditional_prior
 
     likelihood = Likelihood(observables, pars, am_params=am_params, conditional_prior=conditional_prior_fn)
 
@@ -456,8 +466,52 @@ if __name__ == "__main__":
                 bispec=args.bispec, dkB=args.dkB, kmaxB=args.kmaxB,
                 de_model=args.de_model, reparam_option=args.reparam, free_Mnu=args.free_Mnu, outdir=args.outdir, extra=extra,
                 counterterm_basis=args.counterterm_basis, avirB_free=args.avirB_free, use_Mpc=not args.mpc_h,
-                zeff_choice=args.zeff_choice, sigma_kind=args.sigma_kind)
-    if args.minimize:
+                zeff_choice=args.zeff_choice, sigma_kind=args.sigma_kind, rotatew0wa=args.rotatew0wa)
+    if args.minimize and args.minimize_mode == 'simplex_full':
+        # Skip the AM stage: run SIMPLEX on the full likelihood (all nuisance
+        # parameters sampled directly) as the first step, then MIGRAD.
+        pars_full = build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array)
+        likelihood_full = Likelihood(observables, pars_full, am_params=None, conditional_prior=conditional_prior_fn)
+
+        minimizer_full = MinuitMinimizer(likelihood_full, seed_init=args.seed_init, verbose=True)
+
+        # Stage 1: SIMPLEX on the full likelihood. Called directly on the
+        # Minuit object (rather than via run(pre_simplex=True)) so that its
+        # result can be saved before MIGRAD starts.
+        minimizer_full.m.strategy = 2
+        minimizer_full.m.tol = 0.8
+        minimizer_full.m.print_level = 1
+
+        t0 = time.time()
+        print("Starting full-likelihood SIMPLEX minimization...")
+
+        minimizer_full.m.simplex()
+        print(minimizer_full.m.fmin)
+        t1 = time.time()
+        print(f"SIMPLEX minimization finished in {(t1-t0)/60:.2f} minutes.")
+
+        fn_minuit_simplex = fn + '_minuit_simplex'
+        run_metadata_simplex = {**vars(args), 'mocktypes_used': mocktypes_used, 'mocktypes_cov_used': mocktypes_cov_used,
+                                'elapsed_minutes': (t1 - t0) / 60, 'stage': 'full_likelihood_simplex_only'}
+        minimizer_full.save(fn_minuit_simplex, metadata=run_metadata_simplex)
+        print(f"SIMPLEX best-fit result saved to {fn_minuit_simplex}")
+
+        # Stage 2: MIGRAD on the full likelihood, starting from the SIMPLEX
+        # minimum (Minuit keeps the current values and step sizes).
+        t0 = time.time()
+        print("Starting full-likelihood MIGRAD minimization from the SIMPLEX minimum...")
+
+        minimizer_full.run(hesse=args.hesse, verbose=True, tol=0.8, iterate=100)
+        t1 = time.time()
+        print(f"Full-likelihood minimization finished in {(t1-t0)/60:.2f} minutes.")
+
+        fn_minuit = fn + '_minuit_full_simplex'
+        run_metadata = {**vars(args), 'mocktypes_used': mocktypes_used, 'mocktypes_cov_used': mocktypes_cov_used,
+                         'elapsed_minutes': (t1 - t0) / 60, 'stage': 'full_likelihood_simplex',
+                         'simplex_map_file': fn_minuit_simplex}
+        minimizer_full.save(fn_minuit, metadata=run_metadata)
+        print(f"Full-likelihood best-fit result saved to {fn_minuit}")
+    elif args.minimize:
         # Stage 1: minimize with analytical marginalisation (AM) of the
         # linear nuisance parameters, and save the resulting MAP.
         minimizer = MinuitMinimizer(likelihood, seed_init=args.seed_init, verbose=True)

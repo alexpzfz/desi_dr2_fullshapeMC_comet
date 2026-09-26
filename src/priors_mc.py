@@ -17,6 +17,19 @@ def _As_from_log10As(d):
     """Module-level (picklable) derived-parameter function: As in units of 1e-9."""
     return np.exp(d["log10As"]) / 1e10 * 1e9
 
+def _w0_from_w0pwa_w0mwa(d):
+    """Derived-parameter function that computes w0 from w0pwa and w0mwa."""
+    w0pwa = d["w0pwa"]
+    w0mwa = d["w0mwa"]
+    w0 = 0.5 * (w0pwa + w0mwa)
+    return w0
+
+def _wa_from_w0pwa_w0mwa(d):
+    """Derived-parameter function that computes wa from w0pwa and w0mwa."""
+    w0pwa = d["w0pwa"]
+    w0mwa = d["w0mwa"]
+    wa = 0.5 * (w0pwa - w0mwa)
+    return wa
 
 def _copy_param(p, source_name):
     """Derived-parameter function that ties a parameter to the value of another one."""
@@ -41,7 +54,7 @@ def _compute_sigma8_ref(emu, z_array):
 def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
              de_model='lambda', freedom='max', b1_ref=2.109, sigmaR_ref=0.539, sigma1_eff=150/70 * 10**(1/3) * (1 + 0.8)**(1/2), fsat=0.13,
              bispec=False, free_Mnu=False, z_array=None, ns_times_Planck=10,
-             use_Mpc=True, avirB_free=False, sigma_kind=None):
+             use_Mpc=True, avirB_free=False, sigma_kind=None, rotatew0wa=False):
 
     if isinstance(reparam_option, str) and reparam_option.lower() == 'none':
         reparam_option = None
@@ -106,6 +119,13 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
     if de_model == 'w0wa':
         pars.update_parameter('w0', -1., prior=(-3., 1.), prior_type='uniform', fixed=False)
         pars.update_parameter('wa', 0., prior=(-3., 2.), prior_type='uniform', fixed=False)
+        if rotatew0wa:
+            pars.add_sampled_param('w0pwa', -1, prior=(-6., 0.), prior_type='uniform', latex=r'w_0 + w_a')
+            pars.add_sampled_param('w0mwa', -1, prior=(-5., 4.), prior_type='uniform', latex=r'w_0 - w_a')
+
+            pars.set_derived_param('w0', _w0_from_w0pwa_w0mwa, exported=False)
+            pars.set_derived_param('wa', _wa_from_w0pwa_w0mwa, exported=False)
+
     elif de_model == 'w0':
         pars.update_parameter('w0', -1., prior=(-3., 1.), prior_type='uniform', fixed=False)
     elif de_model != 'lambda':
