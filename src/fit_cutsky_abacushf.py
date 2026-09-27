@@ -349,6 +349,8 @@ if __name__ == "__main__":
                              "stage, also minimise the full likelihood with flat priors on the linear parameters, starting "
                              "from the AM MAP. It should reproduce the AM minimum (a convergence check).")
     parser.add_argument('--hesse', action='store_true', help="Run HESSE after MIGRAD to get the covariance matrix. Only used with --minimize.")
+    # parser.add_argument('--minuit_precision', type=float, default=None, help="Relative precision of the likelihood passed to "
+    #                     "Minuit (Minuit.precision), e.g. 1e-4 for a noisy emulator. Default: machine precision. Only used with --minimize.")
     parser.add_argument('--seed_init', type=int, default=None, help="Random seed for drawing the Minuit starting point from the priors. Only used with --minimize.")
     parser.add_argument('--plot_contours', action='store_true', help="After the Nautilus chain finishes, plot the triangle/contour plot for the cosmological parameters and save it to --plot_dir. Not used with --minimize.")
     parser.add_argument('--plot_dir', type=str, default=str(env.PLOTS_DIR_CUTSKY_ABACUSHF), help="Directory to store the contour plot in, when --plot_contours is set.")
@@ -356,7 +358,8 @@ if __name__ == "__main__":
                         "calls to likelihood.get_loglike() at the YAML-default fiducial value of each free parameter, "
                         "then exit. Useful for benchmarking single-call cost vs. numba threads per worker "
                         "(set COMET_THREADS_PER_WORKER, see the top of this file).")
-
+                    
+    minuit_precision = 1e-4 
     args = parser.parse_args()
     if args.model == 'EFT' and args.bispec:
         parser.error("--model EFT is only supported for the power spectrum (no --bispec).")
@@ -510,6 +513,7 @@ if __name__ == "__main__":
         likelihood_full = Likelihood(observables, pars_full, am_params=None, conditional_prior=conditional_prior_fn)
 
         minimizer_full = MinuitMinimizer(likelihood_full, seed_init=args.seed_init, verbose=True)
+        minimizer_full.m.precision = minuit_precision
 
         # Stage 1: SIMPLEX on the full likelihood. Called directly on the
         # Minuit object (rather than via run(pre_simplex=True)) so that its
@@ -551,6 +555,7 @@ if __name__ == "__main__":
         # Stage 1: minimize with analytical marginalisation (AM) of the
         # linear nuisance parameters, and save the resulting MAP.
         minimizer = MinuitMinimizer(likelihood, seed_init=args.seed_init, verbose=True)
+        minimizer.m.precision = minuit_precision
 
         t0 = time.time()
         print("Starting minimization with analytical marginalisation...")
@@ -584,6 +589,7 @@ if __name__ == "__main__":
             likelihood_full = Likelihood(observables, pars_full, am_params=None, conditional_prior=conditional_prior_fn)
 
             minimizer_full = MinuitMinimizer(likelihood_full, seed_init=args.seed_init, verbose=True)
+            minimizer_full.m.precision = minuit_precision
             minimizer_full.set_starting_point(best_fit_am, errors_dict=uncertainties_am, reset_errors=True)
 
             t0 = time.time()
