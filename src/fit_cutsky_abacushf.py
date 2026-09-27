@@ -74,7 +74,7 @@ def _fmt_float(x):
 
 def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, kmaxB=None,
            de_model='lambda', reparam_option='full', free_Mnu=False, outdir=str(env.CHAINS_DIR), extra=None,
-           counterterm_basis='DESIct', avirB_free=False, use_Mpc=True, zeff_choice='zsnap', sigma_kind=None, rotatew0wa=False):
+           counterterm_basis='DESIct', avirB_free=False, use_Mpc=True, zeff_choice='zsnap', sigma_kind=None, rotatew0wa=False, model='VDG'):
 
     if not isinstance(tracer_label, list):
         tracer_label = [tracer_label] 
@@ -117,6 +117,8 @@ def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, km
 
     if rotatew0wa:
         fn += '_rotatew0wa'
+    if model != 'VDG':
+        fn += f'_{model}'
 
     if extra is not None:
         fn += f'_{extra}'
@@ -192,7 +194,8 @@ def build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array):
                      freedom=args.freedom, free_Mnu=args.free_Mnu,
                      b1_ref=b1_ref, sigmaR_ref=sigmaR_ref, sigma1_eff=sigma1_eff, fsat=fsat,
                      z_array=z_array, counterterm_basis=args.counterterm_basis,
-                     avirB_free=args.avirB_free, use_Mpc=not args.mpc_h, sigma_kind=args.sigma_kind, rotatew0wa=args.rotatew0wa)
+                     avirB_free=args.avirB_free, use_Mpc=not args.mpc_h, sigma_kind=args.sigma_kind, rotatew0wa=args.rotatew0wa,
+                     model=args.model)
     if args.bispec:
         pars.emu.bispec_kwargs['sugiyama']['quad_deg'] = (7, 16, 5)
         pars.emu.bispec_kwargs['sugiyama']['mu12_transform'] = 'k3'
@@ -319,6 +322,9 @@ if __name__ == "__main__":
                              "marginalise the linear ones, in their original form, with a Jeffreys prior instead of Gaussian priors.")
     parser.add_argument('--de_model', type=str, default='lambda', choices=['lambda', 'w0wa', 'w0'])
     parser.add_argument('--rotatew0wa', action='store_true', help="Rotate the w0-wa in order to avoid the w0+wa>0 prior cut. Only used with --de_model=w0wa.")
+    parser.add_argument('--model', type=str, default='VDG', choices=['VDG', 'EFT'],
+                        help="Theory model: 'VDG' (VDG_infty, default) or 'EFT' (no virial damping, k^4 counterterm cnlo "
+                             "fixed to 0; power spectrum only). Non-default models are reflected in the output filename.")
     parser.add_argument('--counterterm_basis', type=str, default='DESIct', choices=['DESIct', 'Comet'])
     parser.add_argument('--freedom', type=str, default='interm', choices=['min', 'max', 'interm'])
     parser.add_argument('--free_Mnu', action='store_true')
@@ -352,6 +358,8 @@ if __name__ == "__main__":
                         "(set COMET_THREADS_PER_WORKER, see the top of this file).")
 
     args = parser.parse_args()
+    if args.model == 'EFT' and args.bispec:
+        parser.error("--model EFT is only supported for the power spectrum (no --bispec).")
     if args.jeffreys_check_full and not (args.reparam == 'jeffreys' and args.minimize and args.minimize_mode == 'am_then_full'):
         parser.error("--jeffreys_check_full requires --reparam jeffreys, --minimize and --minimize_mode am_then_full.")
 
@@ -361,7 +369,7 @@ if __name__ == "__main__":
     print(f"Power spectrum settings: ellP={args.ellP}, kminP={args.kminP}, kmaxP={args.kmaxP}, ellwinP={args.ellwinP}, kwinminP={args.kwinminP}, kwinmaxP={args.kwinmaxP}, dkP={args.dkP}")
     if args.bispec:
         print(f"Bispectrum settings: ellB={args.ellB}, kminB={args.kminB}, kmaxB={args.kmaxB}, ellwinB={args.ellwinB}, kwinminB={args.kwinminB}, kwinmaxB={args.kwinmaxB}, dkB={args.dkB}, avirB_free={args.avirB_free}")
-    print(f"DE model: {args.de_model}, reparametrization: {args.reparam}, freedom: {args.freedom}, free_Mnu: {args.free_Mnu}, counterterm_basis: {args.counterterm_basis}, units: {'Mpc/h' if args.mpc_h else 'Mpc'}, zeff_choice: {args.zeff_choice}")
+    print(f"Model: {args.model}, DE model: {args.de_model}, reparametrization: {args.reparam}, freedom: {args.freedom}, free_Mnu: {args.free_Mnu}, counterterm_basis: {args.counterterm_basis}, units: {'Mpc/h' if args.mpc_h else 'Mpc'}, zeff_choice: {args.zeff_choice}")
 
 
     tracer_list = []
@@ -491,7 +499,8 @@ if __name__ == "__main__":
                 bispec=args.bispec, dkB=args.dkB, kmaxB=args.kmaxB,
                 de_model=args.de_model, reparam_option=args.reparam, free_Mnu=args.free_Mnu, outdir=args.outdir, extra=extra,
                 counterterm_basis=args.counterterm_basis, avirB_free=args.avirB_free, use_Mpc=not args.mpc_h,
-                zeff_choice=args.zeff_choice, sigma_kind=args.sigma_kind, rotatew0wa=args.rotatew0wa)
+                zeff_choice=args.zeff_choice, sigma_kind=args.sigma_kind, rotatew0wa=args.rotatew0wa,
+                model=args.model)
     if args.minimize and args.minimize_mode == 'simplex_full':
         # Skip the AM stage: run SIMPLEX on the full likelihood (all nuisance
         # parameters sampled directly) as the first step, then MIGRAD.

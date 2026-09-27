@@ -54,7 +54,13 @@ def _compute_sigma8_ref(emu, z_array):
 def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
              de_model='lambda', freedom='max', b1_ref=2.109, sigmaR_ref=0.539, sigma1_eff=150/70 * 10**(1/3) * (1 + 0.8)**(1/2), fsat=0.13,
              bispec=False, free_Mnu=False, z_array=None, ns_times_Planck=10,
-             use_Mpc=True, avirB_free=False, sigma_kind=None, rotatew0wa=False):
+             use_Mpc=True, avirB_free=False, sigma_kind=None, rotatew0wa=False, model='VDG'):
+    # model:
+    #   'VDG' - VDG_infty model: virial damping parameters avir (and avirB for
+    #           the bispectrum)
+    #   'EFT' - EFT model: no damping, with the k^4 counterterm cnlo fixed
+    #           to zero. Power spectrum only (the EFT bispectrum is not
+    #           supported yet)
     # reparam_option:
     #   'full'     - all nuisance parameters reparametrised (bias with ap+sigma)
     #   'hybrid'   - as 'full', but bias parameters rescaled by sigma only (no ap)
@@ -72,6 +78,12 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
         raise ValueError(f"Invalid reparam_option: {reparam_option}. Must be one of {reparam_options} or None.")
     # whether the linear nuisance parameters are reparametrised too
     reparam_linear = reparam_option in ('full', 'hybrid')
+
+    model_options = {'VDG': 'VDG_infty', 'EFT': 'EFT'}
+    if model not in model_options:
+        raise ValueError(f"Invalid model: {model}. Must be one of {list(model_options)}.")
+    if model == 'EFT' and bispec:
+        raise ValueError("The EFT model is only supported for the power spectrum (bispec=False).")
 
     freedom_options = ['min', 'max', 'interm']
     if freedom not in freedom_options:
@@ -94,7 +106,7 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
     sigma1_eff = _to_nz_array(sigma1_eff, 'sigma1_eff')
     fsat = _to_nz_array(fsat, 'fsat')
 
-    emu = COMET(model='VDG_infty', use_Mpc=use_Mpc, bias_basis=bias_basis, counterterm_basis=counterterm_basis)
+    emu = COMET(model=model_options[model], use_Mpc=use_Mpc, bias_basis=bias_basis, counterterm_basis=counterterm_basis)
 
     # The reparametrization needs a reference sigma_R matching whichever sigma
     # (sigma_12 or sigma_8) it is normalized against, which in turn depends on
@@ -205,7 +217,12 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
             pars.update_parameter(f'bk2{subscript}', bK2ref[iz], prior=(bK2ref[iz], 20.), prior_type='gaussian', fixed=False)
             pars.update_parameter(f'btd{subscript_linear}', btdref[iz], prior=(btdref[iz], 1.), prior_type='gaussian', fixed=False)
 
-        pars.update_parameter(f'avir{sub_idz}', 5., prior=(0, 20./hconv), prior_type='uniform', fixed=False)
+        if model == 'VDG':
+            pars.update_parameter(f'avir{sub_idz}', 5., prior=(0, 20./hconv), prior_type='uniform', fixed=False)
+        else:
+            pars.set_and_fix_param(f'cnlo{subscript_linear}', 0.)
+            if reparam_linear:
+                pars.set_and_fix_param(f'cnlo{sub_idz}', 0.)
         pars.update_parameter(f'NP0{subscript_linear}', 0., prior=(0, gs['NP0_r'][iz]), prior_type='gaussian', fixed=False)
         pars.update_parameter(f'NP20{subscript_linear}', 0., prior=(0, gs['NP20_r'][iz]/hconv**2), prior_type='gaussian', fixed=False)
         pars.update_parameter(f'NP22{subscript_linear}', 0., prior=(0, gs['NP22_r'][iz]/hconv**2), prior_type='gaussian', fixed=False)
@@ -236,7 +253,8 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
         else:
             pars.set_and_fix_param(f'NB0{subscript_linear}', 0.)
             pars.set_and_fix_param(f'MB0{subscript_linear}', 0.)
-            pars.set_and_fix_param(f'avirB{sub_idz}', 0.)
+            if model == 'VDG':
+                pars.set_and_fix_param(f'avirB{sub_idz}', 0.)
 
             if reparam_linear:
                 pars.set_and_fix_param(f'NB0{sub_idz}', 0.)
