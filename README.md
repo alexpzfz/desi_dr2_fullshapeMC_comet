@@ -57,7 +57,8 @@ The repo has no machine-specific paths. After cloning:
    ```bash
    ln -s /global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge data
    ```
-   Elsewhere, copy that directory (~3 GB) to `data/`. To keep it somewhere
+   Elsewhere, get it with `./sync_data.sh pull` (see
+   [Syncing the cached data](#syncing-the-cached-data)). To keep it somewhere
    else, set `DESI_MC_DATA_DIR`.
 2. **full-shape_wrap.** Clone it next to this repo
    (`../full-shape_wrap`), or set `FULL_SHAPE_WRAP_DIR`.
@@ -66,6 +67,37 @@ The repo has no machine-specific paths. After cloning:
    checkout takes precedence over the installed package.
 4. **Chains output.** `outputs/chains/` is created on first use. On NERSC you
    may want it to be a symlink to `$PSCRATCH`.
+
+## Syncing the cached data
+
+The cache is built on NERSC (`python src/read_data.py`) and shared with
+other clusters through a cloud remote (e.g. Nextcloud) using
+[rclone](https://rclone.org). NERSC is the source of truth:
+
+```bash
+./sync_data.sh push            # on NERSC, after rebuilding the cache
+./sync_data.sh pull            # elsewhere: add/update files in data/
+./sync_data.sh pull --delete   # elsewhere: also remove files gone from the remote
+```
+
+Extra arguments are passed to rclone (e.g. `--dry-run`). `push` refuses to run
+off NERSC, or if `data/cutsky` or `data/cubic` is empty, since it mirrors
+deletions to the remote. Run `pull` on a login node; compute nodes often have
+no internet access.
+
+One-time setup on each machine:
+
+1. Install rclone into your `PATH` (no root needed):
+   ```bash
+   curl -LO https://downloads.rclone.org/rclone-current-linux-amd64.zip
+   unzip rclone-current-linux-amd64.zip && cp rclone-*-linux-amd64/rclone ~/.local/bin/
+   ```
+2. Run `rclone config` and create a remote named `nextcloud`: type `webdav`,
+   URL `https://<your-nextcloud>/remote.php/dav/files/<username>/`, vendor
+   `nextcloud`, and a Nextcloud app password (Settings → Security).
+
+The default remote path is `nextcloud:desi_mc_data`; set
+`DESI_MC_RCLONE_REMOTE` to use a different remote or folder.
 
 ## Dependencies
 
