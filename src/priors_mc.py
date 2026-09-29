@@ -54,13 +54,13 @@ def _compute_sigma8_ref(emu, z_array):
 def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
              de_model='lambda', freedom='max', b1_ref=2.109, sigmaR_ref=0.539, sigma1_eff=150/70 * 10**(1/3) * (1 + 0.8)**(1/2), fsat=0.13,
              bispec=False, free_Mnu=False, z_array=None, ns_times_Planck=10,
-             use_Mpc=True, avirB_free=False, sigma_kind=None, rotatew0wa=False, model='VDG'):
+             use_Mpc=True, avirB_free=False, sigma_kind=None, rotatew0wa=False, model='VDG', cnlo_free=False):
     # model:
     #   'VDG' - VDG_infty model: virial damping parameters avir (and avirB for
     #           the bispectrum)
     #   'EFT' - EFT model: no damping, with the k^4 counterterm cnlo fixed
-    #           to zero. Power spectrum only (the EFT bispectrum is not
-    #           supported yet)
+    #           to zero, or free with cnlo_free=True. Power spectrum only (the
+    #           EFT bispectrum is not supported yet)
     # reparam_option:
     #   'full'     - all nuisance parameters reparametrised (bias with ap+sigma)
     #   'hybrid'   - as 'full', but bias parameters rescaled by sigma only (no ap)
@@ -84,6 +84,8 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
         raise ValueError(f"Invalid model: {model}. Must be one of {list(model_options)}.")
     if model == 'EFT' and bispec:
         raise ValueError("The EFT model is only supported for the power spectrum (bispec=False).")
+    if cnlo_free and model != 'EFT':
+        raise ValueError("cnlo_free=True requires model='EFT' (the VDG model has no cnlo).")
 
     freedom_options = ['min', 'max', 'interm']
     if freedom not in freedom_options:
@@ -176,6 +178,7 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
     hconv = h if use_Mpc else 1.0
     stoch_scales = {'max': 500., 'min': 50., 'interm': 50.}
     stoch_scale = stoch_scales[freedom] / (hconv**2)
+    cnlo_scale = 500. / (hconv**4)
 
 
     stochastic_mode = 'ap'
@@ -219,6 +222,11 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
 
         if model == 'VDG':
             pars.update_parameter(f'avir{sub_idz}', 5., prior=(0, 20./hconv), prior_type='uniform', fixed=False)
+        elif cnlo_free:
+            # k^4 counterterm: enters the model linearly, like a0/a2, and is
+            # reparametrised the same way. Width as in the COMET examples,
+            # in (Mpc/h)^4.
+            pars.update_parameter(f'cnlo{subscript_linear}', 0., prior=(0, cnlo_scale), prior_type='gaussian', fixed=False)
         else:
             pars.set_and_fix_param(f'cnlo{subscript_linear}', 0.)
             if reparam_linear:

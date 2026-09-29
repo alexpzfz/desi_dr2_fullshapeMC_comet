@@ -50,6 +50,7 @@ from samplers import NautilusSampler, MinuitMinimizer
 from theory import COMET
 from read_data import get_obs_pk, get_obs_pk_bk
 from priors_mc import get_pars
+from abacus_cosmologies import get_abacus_cosmology
 import plot_utils as pu
 
 
@@ -74,7 +75,8 @@ def _fmt_float(x):
 
 def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, kmaxB=None,
            de_model='lambda', reparam_option='full', free_Mnu=False, outdir=str(env.CHAINS_DIR), extra=None,
-           counterterm_basis='DESIct', avirB_free=False, use_Mpc=True, zeff_choice='zsnap', sigma_kind=None, rotatew0wa=False, model='VDG'):
+           counterterm_basis='DESIct', avirB_free=False, use_Mpc=True, zeff_choice='zsnap', sigma_kind=None, rotatew0wa=False, model='VDG',
+           fix_cosmo=None, cnlo_free=False):
 
     if not isinstance(tracer_label, list):
         tracer_label = [tracer_label] 
@@ -119,6 +121,10 @@ def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, km
         fn += '_rotatew0wa'
     if model != 'VDG':
         fn += f'_{model}'
+    if cnlo_free:
+        fn += '_freecnlo'
+    if fix_cosmo is not None:
+        fn += f'_fixcosmo{fix_cosmo}'
 
     if extra is not None:
         fn += f'_{extra}'
@@ -167,10 +173,12 @@ def get_prior_refs(tracer_list, zrange_list):
     return np.array(b1_ref, dtype=float), np.array(sigmaR_ref, dtype=float), np.array(sigma1_eff, dtype=float), np.array(fsat, dtype=float)
 
 
-def get_am_params(counterterm_basis, bispec, reparam):
+def get_am_params(counterterm_basis, bispec, reparam, cnlo_free=False):
     """Linear nuisance parameters to analytically marginalise. With
     reparam='jeffreys' they are not reparametrised (no '_r' suffix)."""
     ct = ['a0', 'a2'] if counterterm_basis == 'DESIct' else ['c0', 'c2']
+    if cnlo_free:
+        ct.append('cnlo')
     am_params = ['btd'] + ct + ['NP0', 'NP20', 'NP22']
     if bispec:
         am_params += ['NB0', 'MB0']
@@ -188,6 +196,32 @@ def set_flat_linear_priors(pars, am_params, nz):
             pars.update_prior(f'{p}_{iz}' if nz > 1 else p, None, None)
 
 
+def abacus_sampled_cosmo(name, pars):
+    """AbacusSummit cosmology `name`, in terms of the sampled cosmological
+    parameter names of `pars` (log10As is ln(1e10 As), as in priors_mc)."""
+    c = get_abacus_cosmology(name)
+    w0, wa = c['w0_fld'], c['wa_fld']
+    values = {'wb': c['omega_b'], 'wc': c['omega_cdm'], 'h': c['h'], 'ns': c['n_s'], 'log10As': c['logA'],
+              'Mnu': c['m_ncdm'], 'w0': w0, 'wa': wa, 'w0pwa': w0 + wa, 'w0mwa': w0 - wa}
+    if pars.de_model == 'lambda' and (w0 != -1. or wa != 0.):
+        raise ValueError(f"Abacus cosmology {name} has w0={w0}, wa={wa}, but the chain was run with de_model='lambda'.")
+    if pars.de_model == 'w0' and wa != 0.:
+        raise ValueError(f"Abacus cosmology {name} has wa={wa}, but the chain was run with de_model='w0'.")
+    mnu = pars.parameters['Mnu']
+    if mnu.fixed and not np.isclose(mnu.value, values['Mnu'], rtol=1e-4):
+        raise ValueError(f"The chain fixed Mnu={mnu.value}, but Abacus {name} has Mnu={values['Mnu']}.")
+    return {p: values[p] for p in pars.sampled_param_names if p in values}
+
+
+def fix_cosmology(pars, name):
+    """Fix all the sampled cosmological parameters of `pars` to the
+    AbacusSummit cosmology `name`, leaving only the nuisance parameters free."""
+    cosmo = abacus_sampled_cosmo(name, pars)
+    for p, value in cosmo.items():
+        pars.set_and_fix_param(p, value)
+    return cosmo
+
+
 def build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array):
     """Construct a fresh Params object (with its own COMET emulator instance)."""
     pars = get_pars(bispec=args.bispec, de_model=args.de_model, reparam_option=args.reparam,
@@ -195,19 +229,23 @@ def build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array):
                      b1_ref=b1_ref, sigmaR_ref=sigmaR_ref, sigma1_eff=sigma1_eff, fsat=fsat,
                      z_array=z_array, counterterm_basis=args.counterterm_basis,
                      avirB_free=args.avirB_free, use_Mpc=not args.mpc_h, sigma_kind=args.sigma_kind, rotatew0wa=args.rotatew0wa,
-                     model=args.model)
+                     model=args.model, cnlo_free=getattr(args, 'free_cnlo', False))
     if args.bispec:
         pars.emu.bispec_kwargs['sugiyama']['quad_deg'] = (7, 16, 5)
         pars.emu.bispec_kwargs['sugiyama']['mu12_transform'] = 'k3'
         pars.emu.BispNum.backend = 'numba'
     pars.emu.use_interp_kwin = True
+    if getattr(args, 'fix_cosmo', None) is not None:
+        fix_cosmology(pars, args.fix_cosmo)
     return pars
 
 
 def get_cosmo_params_to_plot(args):
     """Names of the sampled/exported cosmological parameters for this fit,
     in the order they should appear in the triangle plot."""
-    params = ['wb', 'wc', 'h', 'ns', 'log10As']
+    if getattr(args, 'fix_cosmo', None) is not None:
+        return []
+    params =['wb', 'wc', 'h', 'ns', 'log10As']
     if args.de_model in ('w0', 'w0wa'):
         params.append('w0')
     if args.de_model == 'w0wa':
@@ -324,10 +362,17 @@ if __name__ == "__main__":
     parser.add_argument('--rotatew0wa', action='store_true', help="Rotate the w0-wa in order to avoid the w0+wa>0 prior cut. Only used with --de_model=w0wa.")
     parser.add_argument('--model', type=str, default='VDG', choices=['VDG', 'EFT'],
                         help="Theory model: 'VDG' (VDG_infty, default) or 'EFT' (no virial damping, k^4 counterterm cnlo "
-                             "fixed to 0; power spectrum only). Non-default models are reflected in the output filename.")
+                             "fixed to 0 unless --free_cnlo; power spectrum only). Non-default models are reflected in the output filename.")
+    parser.add_argument('--free_cnlo', action='store_true', help="Only used with --model EFT: vary the k^4 counterterm cnlo "
+                        "(analytically marginalised with the other linear parameters) instead of fixing it to 0. "
+                        "Reflected in the output filename.")
     parser.add_argument('--counterterm_basis', type=str, default='DESIct', choices=['DESIct', 'Comet'])
     parser.add_argument('--freedom', type=str, default='interm', choices=['min', 'max', 'interm'])
     parser.add_argument('--free_Mnu', action='store_true')
+    parser.add_argument('--fix_cosmo', type=str, nargs='?', const='c000', default=None,
+                        help="Fix the cosmological parameters to this AbacusSummit cosmology (default when given without "
+                             "a value: c000, the true cosmology of the mocks) and fit only the nuisance parameters. "
+                             "Reflected in the output filename.")
     parser.add_argument('--sigma_kind', type=str, default=None, choices=['sigma_8', 'sigma_12'], help="Which sigma to use for the reparametrization. Default: sigma_8 for --mpc_h, sigma_12 otherwise.")
     parser.add_argument('--mpc_h', action='store_true', help="Run the fit in Mpc/h units instead of Mpc. Switches the reparametrization to use sigma8 instead of sigma12.")
     parser.add_argument('--zeff_choice', type=str, default='zsnap', choices=['zsnap', 'zgeom'],
@@ -359,10 +404,12 @@ if __name__ == "__main__":
                         "then exit. Useful for benchmarking single-call cost vs. numba threads per worker "
                         "(set COMET_THREADS_PER_WORKER, see the top of this file).")
                     
-    minuit_precision = 1e-4 
+    minuit_precision = 1e-8 
     args = parser.parse_args()
     if args.model == 'EFT' and args.bispec:
         parser.error("--model EFT is only supported for the power spectrum (no --bispec).")
+    if args.free_cnlo and args.model != 'EFT':
+        parser.error("--free_cnlo requires --model EFT.")
     if args.jeffreys_check_full and not (args.reparam == 'jeffreys' and args.minimize and args.minimize_mode == 'am_then_full'):
         parser.error("--jeffreys_check_full requires --reparam jeffreys, --minimize and --minimize_mode am_then_full.")
 
@@ -372,7 +419,9 @@ if __name__ == "__main__":
     print(f"Power spectrum settings: ellP={args.ellP}, kminP={args.kminP}, kmaxP={args.kmaxP}, ellwinP={args.ellwinP}, kwinminP={args.kwinminP}, kwinmaxP={args.kwinmaxP}, dkP={args.dkP}")
     if args.bispec:
         print(f"Bispectrum settings: ellB={args.ellB}, kminB={args.kminB}, kmaxB={args.kmaxB}, ellwinB={args.ellwinB}, kwinminB={args.kwinminB}, kwinmaxB={args.kwinmaxB}, dkB={args.dkB}, avirB_free={args.avirB_free}")
-    print(f"Model: {args.model}, DE model: {args.de_model}, reparametrization: {args.reparam}, freedom: {args.freedom}, free_Mnu: {args.free_Mnu}, counterterm_basis: {args.counterterm_basis}, units: {'Mpc/h' if args.mpc_h else 'Mpc'}, zeff_choice: {args.zeff_choice}")
+    print(f"Model: {args.model}{' (free cnlo)' if args.free_cnlo else ''}, DE model: {args.de_model}, reparametrization: {args.reparam}, freedom: {args.freedom}, free_Mnu: {args.free_Mnu}, counterterm_basis: {args.counterterm_basis}, units: {'Mpc/h' if args.mpc_h else 'Mpc'}, zeff_choice: {args.zeff_choice}")
+    if args.fix_cosmo is not None:
+        print(f"Cosmology fixed to AbacusSummit {args.fix_cosmo}: fitting only the nuisance parameters.")
 
 
     tracer_list = []
@@ -454,12 +503,12 @@ if __name__ == "__main__":
     z_array = z_array[sort_idx]
     observables = [observables[i] for i in sort_idx]
 
-    am_params = get_am_params(args.counterterm_basis, args.bispec, args.reparam)
+    am_params = get_am_params(args.counterterm_basis, args.bispec, args.reparam, cnlo_free=args.free_cnlo)
 
     pars = build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array)
 
     conditional_prior_fn = None
-    if args.de_model == 'w0wa' and not args.rotatew0wa:
+    if args.de_model == 'w0wa' and not args.rotatew0wa and args.fix_cosmo is None:
         conditional_prior_fn = _w0wa_conditional_prior
 
     likelihood = Likelihood(observables, pars, am_params=am_params, jeffreys=args.reparam == 'jeffreys',
@@ -503,7 +552,7 @@ if __name__ == "__main__":
                 de_model=args.de_model, reparam_option=args.reparam, free_Mnu=args.free_Mnu, outdir=args.outdir, extra=extra,
                 counterterm_basis=args.counterterm_basis, avirB_free=args.avirB_free, use_Mpc=not args.mpc_h,
                 zeff_choice=args.zeff_choice, sigma_kind=args.sigma_kind, rotatew0wa=args.rotatew0wa,
-                model=args.model)
+                model=args.model, fix_cosmo=args.fix_cosmo, cnlo_free=args.free_cnlo)
     if args.minimize and args.minimize_mode == 'simplex_full':
         # Skip the AM stage: run SIMPLEX on the full likelihood (all nuisance
         # parameters sampled directly) as the first step, then MIGRAD.
@@ -635,7 +684,9 @@ if __name__ == "__main__":
         sampler.save(fn, metadata=run_metadata)
         print(f"Chain saved to {fn}")
 
-        if args.plot_contours:
+        if args.plot_contours and args.fix_cosmo is not None:
+            print("Cosmology is fixed (--fix_cosmo): no cosmological contours to plot.")
+        elif args.plot_contours:
             print("Plotting contours for the cosmological parameters...")
             try:
                 samples = pu.get_samples(fn + '.h5')

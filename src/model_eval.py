@@ -27,6 +27,9 @@ def build_likelihood_from_attrs(attrs):
         counterterm_basis=str(attrs['counterterm_basis']),
         avirB_free=bool(attrs['avirB_free']),
         mpc_h=bool(attrs['mpc_h']),
+        sigma_kind=None,
+        rotatew0wa=False,
+        model='VDG',
         zeff_choice=str(attrs.get('zeff_choice', 'zsnap')),
     )
 
@@ -150,7 +153,7 @@ def plot_model_over_data(obs, model_flat, h_units=True, ax=None):
         return ax
 
     ax = obs.plot(ax=ax, h_units=h_units)
-    factor = obs.h_fid if (h_units and obs.h_fid is not None) else 1.0
+    factor, _ = obs.plot_units(h_units)
     model_segs = _split_flat(obs.y, model_flat)
 
     for i, container in enumerate(ax.containers):
@@ -164,3 +167,24 @@ def plot_model_over_data(obs, model_flat, h_units=True, ax=None):
         else:
             raise TypeError(f"Unsupported observable type for plotting: {type(obs)}")
     return ax
+
+if __name__ == '__main__':
+    import argparse
+    from plot_utils import get_samples
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('chain_file', type=str, help="Path to a getdist .h5 chain file")
+    parser.add_argument('--h_units', action='store_true', help="Plot in h Mpc^-1 units")
+    parser.add_argument('--plot_fn', type=str, default=None, help="If given, save the plot to this filename instead of showing it interactively")
+    args = parser.parse_args()
+
+    samples, attrs = get_samples(args.chain_file, return_attrs=True)
+    likelihood = build_likelihood_from_attrs(attrs)
+    model_flat = evaluate_model_at_means(likelihood, samples)
+
+    for obs, model in zip(likelihood.observables, model_flat):
+        plot_model_over_data(obs, model, h_units=args.h_units)
+    if args.plot_fn:
+        plt.savefig(args.plot_fn, bbox_inches='tight')
+    else:
+        plt.show()
