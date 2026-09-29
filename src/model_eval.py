@@ -88,18 +88,23 @@ def build_likelihood_from_attrs(attrs):
 
 
 def evaluate_model_at_means(likelihood, samples):
-    """Evaluate the model at the posterior mean of `samples`, including the
-    linear analytically-marginalised (AM) contribution added back in via the
-    likelihood's design matrix (see Likelihood.get_chi2/marg_chi2).
+    """Evaluate the model at the posterior mean of `samples` (see `evaluate_model`)."""
+    names = samples.getParamNames().list()
+    return evaluate_model(likelihood, dict(zip(names, samples.getMeans())))
+
+
+def evaluate_model(likelihood, values):
+    """Evaluate the model at the parameter values `values` (a dict holding
+    the sampled parameters and, if the likelihood uses AM, the linear
+    analytically-marginalised ones, e.g. a MinuitMinimizer.get_map() best
+    fit), including the AM contribution added back in via the likelihood's
+    design matrix (see Likelihood.get_chi2/marg_chi2).
 
     Returns one flattened array per observable in `likelihood.observables`,
     in the same order as `obs.get_flatten()`.
     """
-    names = samples.getParamNames().list()
-    means = dict(zip(names, samples.getMeans()))
-
     pars = likelihood.params
-    free_dict = {name: means[name] for name in pars.sampled_param_names}
+    free_dict = {name: values[name] for name in pars.sampled_param_names}
     full_dict = pars.get_full_dict(free_dict)
 
     am_params = likelihood.am_params if likelihood.do_am else [[] for _ in likelihood.observables]
@@ -109,7 +114,7 @@ def evaluate_model_at_means(likelihood, samples):
     # `preds` below, and the design-matrix contribution isn't double-counted.
     for am_names_iz in am_params:
         for name in am_names_iz:
-            full_dict[name] = means[name]
+            full_dict[name] = values[name]
 
     comet_params = pars.get_comet_dict(full_dict)
     preds = likelihood.emu.predict(likelihood.observables, comet_params, de_model=likelihood.de_model)
@@ -167,6 +172,53 @@ def plot_model_over_data(obs, model_flat, h_units=True, ax=None):
         else:
             raise TypeError(f"Unsupported observable type for plotting: {type(obs)}")
     return ax
+
+
+def _plot_x(obs, i, factor):
+    """x values (in plotting units) of multipole `i` of `obs`, as used by `obs.plot()`."""
+    if obs.__class__.__name__ == 'BispectrumSugiyamaMultipoles':
+        return obs.x[i][:, 0] / factor
+    return obs.x[i] / factor
+
+
+def plot_model_over_data_residuals(obs, model_flat, h_units=True, fig=None, n_sigma=2):
+    """Same as `plot_model_over_data`, plus one panel per multipole below the
+    main one showing (data - model) / sigma, with a +-`n_sigma` band. Handles
+    JointObservable by placing its two sub-observables in side-by-side columns.
+    Returns the figure."""
+    if fig is None:
+        n_cols = 2 if obs.__class__.__name__ == 'JointObservable' else 1
+        n_res = max(o.n_obs for o in obs.observables) if n_cols == 2 else obs.n_obs
+        fig = plt.figure(figsize=(5.5 * n_cols, 4 + 1.2 * n_res))
+
+    if obs.__class__.__name__ == 'JointObservable':
+        obs1, obs2 = obs.observables
+        model1, model2 = model_flat[:obs1.n_data], model_flat[obs1.n_data:]
+        subfig1, subfig2 = fig.subfigures(1, 2)
+        plot_model_over_data_residuals(obs1, model1, h_units=h_units, fig=subfig1, n_sigma=n_sigma)
+        plot_model_over_data_residuals(obs2, model2, h_units=h_units, fig=subfig2, n_sigma=n_sigma)
+        return fig
+
+    axes = fig.subplots(1 + obs.n_obs, 1, sharex=True, height_ratios=[3] + [1] * obs.n_obs,
+                        gridspec_kw={'hspace': 0.05})
+    ax_main, ax_res = axes[0], axes[1:]
+    plot_model_over_data(obs, model_flat, h_units=h_units, ax=ax_main)
+    xlabel = ax_main.get_xlabel()
+    ax_main.set_xlabel('')
+
+    factor, _ = obs.plot_units(h_units)
+    model_segs = _split_flat(obs.y, model_flat)
+    err_segs = _split_flat(obs.y, np.sqrt(np.diag(obs.cov)))
+    for i, (ax, container) in enumerate(zip(ax_res, ax_main.containers)):
+        color = container.lines[0].get_color()
+        x = _plot_x(obs, i, factor)
+        ax.axhspan(-n_sigma, n_sigma, color='gray', alpha=0.2, lw=0)
+        ax.axhline(0, color='k', lw=0.8)
+        ax.plot(x, (obs.y[i] - model_segs[i]) / err_segs[i], 'o', color=color, ms=4)
+        ax.set_ylabel(r'$\Delta / \sigma$')
+        ax.text(0.02, 0.9, container.get_label(), transform=ax.transAxes, ha='left', va='top', fontsize='small')
+    ax_res[-1].set_xlabel(xlabel)
+    return fig
 
 if __name__ == '__main__':
     import argparse

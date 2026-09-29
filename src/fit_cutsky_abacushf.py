@@ -306,6 +306,47 @@ def _w0wa_conditional_prior(params):
     return params['w0'] + params['wa'] < 0
 
 
+def plot_bestfit(likelihood, best_fit, fn, labels, plot_dir, h_units=False, title=None):
+    """Plot the model at `best_fit` (a MinuitMinimizer.get_map() dict) on top
+    of the data, with a (data - model) / sigma panel per multipole below it,
+    one figure per observable (z-bin), saved to `plot_dir` as
+    <basename of fn>_bestfit_<label>.png. `labels` are the tracer labels in
+    the order of `likelihood.observables`. Each title shows the data chi2 of
+    that observable at the best fit, (data - model)^T C^-1 (data - model),
+    with the same (rescaled) covariance as the likelihood: unlike Minuit's
+    fval, it excludes the priors and their normalisation, and the AM terms."""
+    # Imported here: model_eval imports this module.
+    from model_eval import evaluate_model, plot_model_over_data_residuals
+    from likelihood import get_bCib
+    try:
+        models = evaluate_model(likelihood, best_fit)
+        chi2s = [float(get_bCib(lcov, y - model)) for lcov, y, model in zip(likelihood.lcovs, likelihood.ys, models)]
+        print(f"Data chi2 at the best fit: " + ', '.join(f"{label} = {chi2:.2f} ({len(y)} pts)"
+                                                          for label, chi2, y in zip(labels, chi2s, likelihood.ys)))
+        os.makedirs(plot_dir, exist_ok=True)
+        for obs, model, label, chi2, y in zip(likelihood.observables, models, labels, chi2s, likelihood.ys):
+            plot_fn = os.path.join(plot_dir, f"{Path(fn).name}_bestfit_{label}.png")
+
+            def _plot():
+                fig = plot_model_over_data_residuals(obs, model, h_units=h_units)
+                fig.suptitle(f"{label}" + (f", {title}" if title else '') + f", $\\chi^2 = {chi2:.2f}$ / {len(y)} pts")
+                fig.savefig(plot_fn, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+            try:
+                _plot()
+            except (RuntimeError, FileNotFoundError):
+                # plot_utils sets rcParams['text.usetex'] = True at import
+                # time; fall back to mathtext if LaTeX is not available here.
+                plt.close('all')
+                plt.rc('text', usetex=False)
+                _plot()
+            print(f"Best-fit plot saved to {plot_fn}")
+    except Exception as e:
+        # The best fit is already saved at this point; don't let a plotting
+        # failure look like the whole run failed.
+        print(f"Warning: failed to plot the best-fit model ({e}). Best fit is still saved at {fn}.")
+
+
 if __name__ == "__main__":
     import argparse
     import time
@@ -398,7 +439,9 @@ if __name__ == "__main__":
     #                     "Minuit (Minuit.precision), e.g. 1e-4 for a noisy emulator. Default: machine precision. Only used with --minimize.")
     parser.add_argument('--seed_init', type=int, default=None, help="Random seed for drawing the Minuit starting point from the priors. Only used with --minimize.")
     parser.add_argument('--plot_contours', action='store_true', help="After the Nautilus chain finishes, plot the triangle/contour plot for the cosmological parameters and save it to --plot_dir. Not used with --minimize.")
-    parser.add_argument('--plot_dir', type=str, default=str(env.PLOTS_DIR_CUTSKY_ABACUSHF), help="Directory to store the contour plot in, when --plot_contours is set.")
+    parser.add_argument('--plot_bestfit', action='store_true', help="Only used with --minimize. After each minimization stage, "
+                        "plot the best-fit model on top of the data (one figure per tracer) and save it to --plot_dir.")
+    parser.add_argument('--plot_dir', type=str, default=str(env.PLOTS_DIR_CUTSKY_ABACUSHF), help="Directory to store the plots in, when --plot_contours or --plot_bestfit is set.")
     parser.add_argument('--time_likelihood', type=int, default=None, help="Instead of minimizing/sampling, time this many "
                         "calls to likelihood.get_loglike() at the YAML-default fiducial value of each free parameter, "
                         "then exit. Useful for benchmarking single-call cost vs. numba threads per worker "
@@ -412,6 +455,8 @@ if __name__ == "__main__":
         parser.error("--free_cnlo requires --model EFT.")
     if args.jeffreys_check_full and not (args.reparam == 'jeffreys' and args.minimize and args.minimize_mode == 'am_then_full'):
         parser.error("--jeffreys_check_full requires --reparam jeffreys, --minimize and --minimize_mode am_then_full.")
+    if args.plot_bestfit and not args.minimize:
+        parser.error("--plot_bestfit requires --minimize.")
 
     print(f"Fitting tracer(s) {args.tracer_label} in region {args.region}")
     if args.mocktype or args.mocktype_cov or args.data_dir:
@@ -502,6 +547,7 @@ if __name__ == "__main__":
     sort_idx = np.argsort(z_array)
     z_array = z_array[sort_idx]
     observables = [observables[i] for i in sort_idx]
+    sorted_labels = [args.tracer_label[i] for i in sort_idx]
 
     am_params = get_am_params(args.counterterm_basis, args.bispec, args.reparam, cnlo_free=args.free_cnlo)
 
@@ -584,6 +630,9 @@ if __name__ == "__main__":
                                 'elapsed_minutes': (t1 - t0) / 60, 'stage': 'full_likelihood_simplex_only'}
         minimizer_full.save(fn_minuit_simplex, metadata=run_metadata_simplex)
         print(f"SIMPLEX best-fit result saved to {fn_minuit_simplex}")
+        if args.plot_bestfit:
+            plot_bestfit(likelihood_full, minimizer_full.get_map()[0], fn_minuit_simplex, sorted_labels, args.plot_dir,
+                         h_units=args.mpc_h, title="SIMPLEX")
 
         # Stage 2: MIGRAD on the full likelihood, starting from the SIMPLEX
         # minimum (Minuit keeps the current values and step sizes).
@@ -600,6 +649,9 @@ if __name__ == "__main__":
                          'simplex_map_file': fn_minuit_simplex}
         minimizer_full.save(fn_minuit, metadata=run_metadata)
         print(f"Full-likelihood best-fit result saved to {fn_minuit}")
+        if args.plot_bestfit:
+            plot_bestfit(likelihood_full, minimizer_full.get_map()[0], fn_minuit, sorted_labels, args.plot_dir,
+                         h_units=args.mpc_h, title="full likelihood")
     elif args.minimize:
         # Stage 1: minimize with analytical marginalisation (AM) of the
         # linear nuisance parameters, and save the resulting MAP.
@@ -620,6 +672,9 @@ if __name__ == "__main__":
                            'elapsed_minutes': (t1 - t0) / 60, 'stage': 'analytical_marginalisation'}
         minimizer.save(fn_minuit_am, best_fit=best_fit_am, uncertainties=uncertainties_am, metadata=run_metadata_am)
         print(f"AM best-fit result saved to {fn_minuit_am}")
+        if args.plot_bestfit:
+            plot_bestfit(likelihood, best_fit_am, fn_minuit_am, sorted_labels, args.plot_dir,
+                         h_units=args.mpc_h, title="AM")
 
         # With Jeffreys priors the AM stage already gives the MAP: the marginalised
         # chi2 is the profile chi2 over the linear parameters, and get_map
@@ -657,6 +712,9 @@ if __name__ == "__main__":
                              'am_map_file': fn_minuit_am}
             minimizer_full.save(fn_minuit, metadata=run_metadata)
             print(f"Full-likelihood best-fit result saved to {fn_minuit}")
+            if args.plot_bestfit:
+                plot_bestfit(likelihood_full, minimizer_full.get_map()[0], fn_minuit, sorted_labels, args.plot_dir,
+                             h_units=args.mpc_h, title="full likelihood")
     else:
         fn_snap = fn + '_snap.hdf5'
 
