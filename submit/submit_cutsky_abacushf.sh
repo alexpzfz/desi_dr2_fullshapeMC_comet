@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --constraint=cpu
 #SBATCH --job-name=mc2f
-#SBATCH --account=desi
+##SBATCH --account=desi
 # --output is relative to where sbatch is run: submit from the repo root, or
 # pass --output explicitly (the run_*.sh wrappers do).
 #SBATCH --output=outputs/logs/%x_%j.out
@@ -17,6 +17,14 @@ else
     _script="${BASH_SOURCE[0]}"
 fi
 REPO_ROOT="$(cd "$(dirname "$_script")/.." && pwd)"
+
+if [ -n "${NERSC_HOST:-}" ]; then
+    source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main
+else
+    module load python-waterboa/2024.06
+    source "$(conda info --base)/etc/profile.d/conda.sh"
+    conda activate fs
+fi
 
 # Map each array index to one tracer/z bin.
 #zranges=("BGS 0.1 0.4" "LRG 0.4 0.6" "LRG 0.6 0.8" "LRG 0.8 1.1" "ELG_LOP 0.8 1.1" "ELG_LOP 1.1 1.6" "QSO 0.8 2.1")
