@@ -58,7 +58,7 @@ The repo has no machine-specific paths. After cloning:
    ln -s /global/cfs/cdirs/desicollab/users/alexpzfz/DR2_2pt3pt/data_for_mock_challenge data
    ```
    Elsewhere, get it with `./sync_data.sh pull` (see
-   [Syncing the cached data](#syncing-the-cached-data)). To keep it somewhere
+   [Syncing data and chains](#syncing-data-and-chains)). To keep it somewhere
    else, set `DESI_MC_DATA_DIR`.
 2. **full-shape_wrap.** Clone it next to this repo
    (`../full-shape_wrap`), or set `FULL_SHAPE_WRAP_DIR`.
@@ -68,36 +68,45 @@ The repo has no machine-specific paths. After cloning:
 4. **Chains output.** `outputs/chains/` is created on first use. On NERSC you
    may want it to be a symlink to `$PSCRATCH`.
 
-## Syncing the cached data
+## Syncing data and chains
 
-The cache is built on NERSC (`python src/read_data.py`) and shared with
-other clusters through a cloud remote (e.g. Nextcloud) using
-[rclone](https://rclone.org). NERSC is the source of truth:
+`sync_data.sh` copies the cached data and the chains between NERSC and
+another machine with rsync over ssh. Run it on the other machine. NERSC is
+the source of truth for the data; chains can be run on either machine and
+are synced both ways:
 
 ```bash
-./sync_data.sh push            # on NERSC, after rebuilding the cache
-./sync_data.sh pull            # elsewhere: add/update files in data/
-./sync_data.sh pull --delete   # elsewhere: also remove files gone from the remote
+./sync_data.sh pull                 # data/ from NERSC (add/update only)
+./sync_data.sh pull data --delete   # also remove local files gone from NERSC
+./sync_data.sh pull chains          # outputs/chains/ from NERSC
+./sync_data.sh pull all             # both
+./sync_data.sh push chains          # local outputs/chains/ to NERSC
 ```
 
-Extra arguments are passed to rclone (e.g. `--dry-run`). `push` refuses to run
-off NERSC, or if `data/cutsky` or `data/cubic` is empty, since it mirrors
-deletions to the remote. Run `pull` on a login node; compute nodes often have
-no internet access.
+Extra arguments are passed to rsync (e.g. `--dry-run`). Chains are never
+deleted on either side, and a file is not overwritten if the copy being
+replaced is newer. Nautilus snapshots (`*_snap.hdf5`, `*_nautilus.hdf5`) are
+skipped, as they are only checkpoints and make up most of the volume. Run the
+script on a login node; compute nodes often have no internet access.
 
-One-time setup on each machine:
+One-time setup on the other machine:
 
-1. Install rclone into your `PATH` (no root needed):
-   ```bash
-   curl -LO https://downloads.rclone.org/rclone-current-linux-amd64.zip
-   unzip rclone-current-linux-amd64.zip && cp rclone-*-linux-amd64/rclone ~/.local/bin/
+1. Get NERSC's `sshproxy.sh` (see the NERSC docs on MFA / sshproxy) and add
+   the data transfer node to `~/.ssh/config`:
    ```
-2. Run `rclone config` and create a remote named `nextcloud`: type `webdav`,
-   URL `https://<your-nextcloud>/remote.php/dav/files/<username>/`, vendor
-   `nextcloud`, and a Nextcloud app password (Settings → Security).
+   Host dtn01.nersc.gov
+       User <nersc-username>
+       IdentityFile ~/.ssh/nersc
+   ```
+2. On NERSC, make sure `outputs/chains` exists in the repo (a symlink to
+   `$PSCRATCH` is fine).
 
-The default remote path is `nextcloud:desi_mc_data`; set
-`DESI_MC_RCLONE_REMOTE` to use a different remote or folder.
+Then, once a day before syncing, run `./sshproxy.sh -u <nersc-username>` to
+get a fresh 24-hour key.
+
+Set `DESI_MC_NERSC_HOST` to use another ssh host, and `DESI_MC_NERSC_REPO`
+if the repo is not at `/global/homes/a/alexpzfz/desi_dr2_fullshapeMC_comet`
+on NERSC.
 
 ## Dependencies
 

@@ -255,7 +255,8 @@ def link_windows_and_covs(outdir, data_dir, mocktype_out, label, mocktype, mockt
             continue
         if dst.is_symlink() or dst.exists():
             dst.unlink()
-        dst.symlink_to(src.resolve())
+        # relative, so the link still works when data/ is copied elsewhere
+        dst.symlink_to(os.path.relpath(src.resolve(), dst.parent.resolve()))
 
 
 def generate(fn, reference, args, outdir, mocktype_out):
