@@ -1,9 +1,11 @@
 """Add derived cosmological parameters (sigma8, Omega_m) to a chain .h5 file.
 
 Works on any chain produced by the fitting pipeline (see src/samplers.py) --
-no hardcoded filenames or naming conventions. The chain's HDF5 attrs (e.g.
-tracer, de_model, units -- see the `metadata` passed to NautilusSampler.save
-/ MinuitMinimizer.save) are read alongside the samples and carried over to
+no hardcoded filenames or naming conventions. The chain is read and written
+directly with h5py (no getdist): new parameters are appended as extra columns
+of `points` (with matching `names` / `latex_names` entries), and every other
+dataset and HDF5 attr (e.g. tracer, de_model, units -- see the `metadata`
+passed to NautilusSampler.save / MinuitMinimizer.save) is carried over to
 the output file untouched.
 
 By default the file is augmented in place: the original is left untouched
@@ -23,6 +25,14 @@ truncated.
 sigma8 is the slow part (one CLASS/CAMB/emulator call per sample) and
 should be run under MPI for any non-trivial chain:
     mpirun -n <N> python augment_chain.py <chain.h5> [chain2.h5 ...] [options]
+The COMET emulator is only loaded when --engine comet is used.
+
+Derived parameters are only computed for samples with non-zero weight. The
+nautilus chains also store rejected points (log_weight = -inf, e.g. those
+failing the w0 + wa < 0 conditional prior), which CLASS may not be able to
+evaluate; those rows get NaN. For class/camb, samples on which the engine fails
+are retried with fallbacks (see postprocess.SIGMA8_FALLBACKS); if all of them
+fail the sample gets NaN and a warning is printed.
 
 Already-present parameters are skipped by default (pass --force to
 recompute them anyway). When sigma8 is (re)computed, the engine used
@@ -37,17 +47,46 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import env  # noqa: F401
-import plot_utils as pu
-from postprocess import add_Omega_m, add_sigma8
+import h5py
+import numpy as np
+from postprocess import compute_Omega_m, compute_sigma8
 from mpi4py import MPI
 
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 
+# name -> (latex label, fn(points, names, engine) returning the column on rank 0)
 DERIVED_PARAMS = {
-    'sigma8': lambda samples, engine: add_sigma8(samples, comm=comm, engine=engine),
-    'Omega_m': lambda samples, engine: add_Omega_m(samples, comm=comm),
+    'sigma8': (r'\sigma_8', lambda points, names, engine: compute_sigma8(points, names, comm=comm, engine=engine)),
+    'Omega_m': (r'\Omega_m', lambda points, names, engine: compute_Omega_m(points, names)),
 }
+CHAIN_DATASETS = ('points', 'names', 'latex_names')
+
+
+def read_chain(chain_file):
+    """Return (points, log_weights, names, labels, attrs) from a chain .h5 file."""
+    with h5py.File(chain_file, 'r') as f:
+        points = f['points'][:]
+        log_weights = f['log_weights'][:]
+        names = list(f['names'].asstr()[:])
+        labels = list(f['latex_names'].asstr()[:])
+        attrs = dict(f.attrs)
+    return points, log_weights, names, labels, attrs
+
+
+def write_chain(src_file, dst_file, points, names, labels, attrs):
+    """Write `dst_file` as a copy of `src_file` with points/names/latex_names
+    and attrs replaced; all other datasets are copied over as-is."""
+    str_dtype = h5py.string_dtype(encoding='utf-8')
+    with h5py.File(src_file, 'r') as src, h5py.File(dst_file, 'w') as dst:
+        for key in src:
+            if key not in CHAIN_DATASETS:
+                src.copy(src[key], dst, name=key)
+        dst.create_dataset('points', data=points)
+        dst.create_dataset('names', data=names, dtype=str_dtype)
+        dst.create_dataset('latex_names', data=labels, dtype=str_dtype)
+        for key, value in attrs.items():
+            dst.attrs[key] = value
 
 
 def augment_chain(chain_file, params=('sigma8', 'Omega_m'), engine='comet', output=None,
@@ -57,8 +96,7 @@ def augment_chain(chain_file, params=('sigma8', 'Omega_m'), engine='comet', outp
     `chain_file` in place, safely -- see module docstring).
 
     All ranks of MPI.COMM_WORLD must call this together (the derived-param
-    computation is parallelized across them); only rank 0 touches disk.
-    Returns the augmented MCSamples object.
+    computation is parallelized across them); only rank 0 writes to disk.
     """
     chain_file = Path(chain_file)
     in_place = output is None
@@ -68,10 +106,13 @@ def augment_chain(chain_file, params=('sigma8', 'Omega_m'), engine='comet', outp
     if unknown:
         raise ValueError(f"Unknown derived parameter(s) {unknown}. Available: {sorted(DERIVED_PARAMS)}")
 
-    samples, attrs = pu.get_samples(str(chain_file), return_attrs=True)
+    points, log_weights, names, labels, attrs = read_chain(chain_file)
+    valid = np.isfinite(log_weights)
+    if rank == 0 and not valid.all():
+        print(f"{chain_file.name}: {(~valid).sum()}/{valid.size} samples have zero weight, "
+              "setting their derived parameters to NaN.")
 
-    existing = set(samples.getParamNames().list())
-    to_add = [p for p in params if force or p not in existing]
+    to_add = [p for p in params if force or p not in names]
     skipped = [p for p in params if p not in to_add]
     if rank == 0 and skipped:
         print(f"{chain_file.name}: {skipped} already present, skipping (pass --force to recompute).")
@@ -79,7 +120,7 @@ def augment_chain(chain_file, params=('sigma8', 'Omega_m'), engine='comet', outp
     if not to_add:
         if rank == 0 and not in_place:
             shutil.copy2(chain_file, target)
-        return samples
+        return
 
     backup = None
     if rank == 0 and in_place:
@@ -88,7 +129,22 @@ def augment_chain(chain_file, params=('sigma8', 'Omega_m'), engine='comet', outp
 
     try:
         for name in to_add:
-            samples = DERIVED_PARAMS[name](samples, engine)
+            label, compute = DERIVED_PARAMS[name]
+            valid_values = compute(points[valid], names, engine)
+            if rank != 0:
+                continue
+            values = np.full(len(points), np.nan)
+            values[valid] = valid_values
+            n_nan = np.isnan(valid_values).sum()
+            if n_nan:
+                print(f"WARNING: {chain_file.name}: {name} could not be computed for {n_nan} "
+                      f"sample(s) with non-zero weight; they are NaN in the output.")
+            if name in names:  # --force: overwrite the existing column
+                points[:, names.index(name)] = values
+            else:
+                points = np.column_stack([points, values])
+                names.append(name)
+                labels.append(label)
         if 'sigma8' in to_add:
             attrs = {**attrs, 'sigma8_engine': engine}
 
@@ -97,7 +153,7 @@ def augment_chain(chain_file, params=('sigma8', 'Omega_m'), engine='comet', outp
             fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix='.h5')
             os.close(fd)
             try:
-                pu.save_samples(samples, tmp_path, attrs=attrs)
+                write_chain(chain_file, tmp_path, points, names, labels, attrs)
                 os.replace(tmp_path, target)
             except BaseException:
                 os.remove(tmp_path)
@@ -109,8 +165,6 @@ def augment_chain(chain_file, params=('sigma8', 'Omega_m'), engine='comet', outp
                 print(f"Kept backup at {backup}")
             else:
                 os.remove(backup)
-
-    return samples
 
 
 if __name__ == "__main__":

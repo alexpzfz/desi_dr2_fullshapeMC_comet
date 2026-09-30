@@ -1,7 +1,6 @@
 import numpy as np
 from mpi4py import MPI
 import sys
-from comet import comet
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import env  # noqa: F401
@@ -51,26 +50,71 @@ def map_to_cosmoprimo(names):
     return [COSMOPRIMO_MAPPING[name] for name in names]
 
 
-def _compute_sigma8_cosmoprimo(params, engine, which='cb'):
+def _compute_sigma8_cosmoprimo(params, engine, which='cb', **extra):
     # cosmoprimo (with CLASS/CAMB) is only needed for engine='class'/'camb';
     # engine='comet' works without it.
     from cosmoprimo import Cosmology
-    cosmo = Cosmology(**FIDUCIAL | params, engine=engine)
+    cosmo = Cosmology(**FIDUCIAL | params, engine=engine, **extra)
+    return _sigma8_from_cosmo(cosmo, engine, which)
+
+
+# Per-sample fallbacks, tried in order when the previous one raises a cosmoprimo
+# computation/input error. CLASS's perturbation evolver fails ("Step size too
+# small") for some strongly phantom w0wa samples (w0 + wa <~ -3.5, high h); a
+# looser integration tolerance or CAMB fixes it, agreeing to ~0.3%.
+SIGMA8_FALLBACKS = {
+    'class': [('class', {}), ('class', {'tol_perturbations_integration': 1e-4}), ('camb', {})],
+    'camb': [('camb', {}), ('class', {}), ('class', {'tol_perturbations_integration': 1e-4})],
+}
+
+
+def _fallback_label(engine, extra):
+    return engine + ''.join(f' {k}={v}' for k, v in extra.items())
+
+
+def _compute_sigma8_with_fallbacks(params, engine, which='cb'):
+    """Return (sigma8, label of the method that worked); (nan, 'failed') if all fail."""
+    from cosmoprimo.cosmology import CosmologyComputationError, CosmologyInputError
+    for eng, extra in SIGMA8_FALLBACKS[engine]:
+        try:
+            return _compute_sigma8_cosmoprimo(params, eng, which, **extra), _fallback_label(eng, extra)
+        except (CosmologyComputationError, CosmologyInputError):
+            continue
+    return np.nan, 'all failed (NaN)'
+
+
+def _sigma8_from_cosmo(cosmo, engine, which):
     if which == 'm':
         return cosmo.sigma8_m
+    if engine == 'camb':
+        # cosmoprimo's CAMB engine has no sigma8_cb property; compute it from the delta_cb power spectrum.
+        return cosmo.get_fourier().sigma8_z(0., of='delta_cb')
     return cosmo.sigma8_cb # we want the sigma8 of the CDM+baryons (no neutrinos) ??
 
-emu = comet(model='VDG_infty', use_Mpc=False)
+_emu = None
+def _get_emu():
+    # Built lazily so that engine='class'/'camb' never loads the emulator.
+    global _emu
+    if _emu is None:
+        from comet import comet
+        _emu = comet(model='VDG_infty', use_Mpc=False)
+    return _emu
+
 def _compute_sigma8_comet(params):
     de_model = 'lambda' if 'wa' not in params else 'w0wa'
     if 'log10As' in params:
         params['As'] = _map_logAs_to_As(params.pop('log10As'))
     scale = 8.0 # Mpc/h
     # scale_Mpc = scale / params['h'] # convert to Mpc
-    return emu.sigmaR(scale, FIDUCIAL_COMET | params, de_model=de_model)
+    return _get_emu().sigmaR(scale, FIDUCIAL_COMET | params, de_model=de_model)
 
 
-def add_sigma8(samples, comm=None, engine='class', which='cb'):
+def compute_sigma8(points, names, comm=None, engine='class', which='cb'):
+    """Compute sigma8 for each row of `points` (columns named by `names`).
+
+    MPI-collective: the rows are split across the ranks of ``comm``. Returns the
+    full sigma8 array on rank 0 and ``None`` on the other ranks.
+    """
     _engine_options = ['class', 'camb', 'comet']
     if engine not in _engine_options:
         raise ValueError(f"Invalid engine '{engine}'. Valid options are: {_engine_options}")
@@ -79,35 +123,96 @@ def add_sigma8(samples, comm=None, engine='class', which='cb'):
     rank = comm.Get_rank()
     size = comm.Get_size()
 
-    cosmo_names = [n for n in samples.getParamNames().list() if n in COSMOPRIMO_MAPPING]
+    names = list(names)
+    cosmo_names = [n for n in names if n in COSMOPRIMO_MAPPING]
     cp_names = map_to_cosmoprimo(cosmo_names)
-    idx = [samples.index[n] for n in cosmo_names]
-    points = samples.samples[:, idx]
+    idx = [names.index(n) for n in cosmo_names]
+    points = np.asarray(points)[:, idx]
     n = points.shape[0]
 
     local_idx = np.array_split(np.arange(n), size)[rank]
-    if engine in ['class', 'camb']:
-        local_sigma8 = np.array(
-            [_compute_sigma8_cosmoprimo(dict(zip(cp_names, points[i])), engine=engine, which=which) for i in local_idx]
-        )
-    elif engine == 'comet':
-        local_sigma8 = np.array(
-            [_compute_sigma8_comet(dict(zip(cosmo_names, points[i]))) for i in local_idx]
-        )
+    local_methods = {}
+    try:
+        if engine in ['class', 'camb']:
+            local_sigma8 = np.empty(len(local_idx), dtype=float)
+            for j, i in enumerate(local_idx):
+                local_sigma8[j], method = _compute_sigma8_with_fallbacks(dict(zip(cp_names, points[i])), engine, which)
+                local_methods[method] = local_methods.get(method, 0) + 1
+        elif engine == 'comet':
+            local_sigma8 = np.array(
+                [_compute_sigma8_comet(dict(zip(cosmo_names, points[i]))) for i in local_idx],
+                dtype=float,
+            )
+    except BaseException:
+        # Any other error on one rank would leave the others blocked in the
+        # collectives below; abort the whole job instead of hanging.
+        if size > 1:
+            import traceback
+            traceback.print_exc()
+            sys.stderr.flush()
+            comm.Abort(1)
+        raise
+
+    all_methods = comm.gather(local_methods, root=0)
+    if rank == 0 and engine in ['class', 'camb']:
+        methods = {}
+        for m in all_methods:
+            for k, v in m.items():
+                methods[k] = methods.get(k, 0) + v
+        default = _fallback_label(*SIGMA8_FALLBACKS[engine][0])
+        if set(methods) - {default}:
+            print(f"sigma8 methods used over {n} samples -- " + ', '.join(f"{k}: {v}" for k, v in methods.items()))
 
     counts = comm.allgather(local_sigma8.size)
     sigma8 = np.empty(n, dtype=local_sigma8.dtype) if rank == 0 else None
     comm.Gatherv(local_sigma8, (sigma8, counts) if rank == 0 else None, root=0)
+    return sigma8
 
-    if rank == 0:
+
+def add_sigma8(samples, comm=None, engine='class', which='cb'):
+    if comm is None:
+        comm = MPI.COMM_WORLD
+    sigma8 = compute_sigma8(samples.samples, samples.getParamNames().list(),
+                            comm=comm, engine=engine, which=which)
+    if comm.Get_rank() == 0:
         samples.addDerived(sigma8, name='sigma8', label=r'\sigma_8')
         samples.updateBaseStatistics()
     return samples
 
 
+def compute_Omega_m(points, names):
+    """
+    Computes Omega_m = (omega_cdm + omega_b + omega_ncdm) / h^2 for each row of
+    `points` (columns named by `names`), using fiducial values for any parameter
+    not in the chain.
+    """
+    names = list(names)
+    points = np.asarray(points)
+    n = points.shape[0]
+
+    def col(*candidates, default):
+        for name in candidates:
+            if name in names:
+                return points[:, names.index(name)]
+        return default
+
+    # Default to fiducial values if parameters are not in the chain
+    wc = col('wc', 'omega_cdm', default=cosmo_fid['omega_cdm'])
+    wb = col('wb', 'omega_b', default=cosmo_fid['omega_b'])
+    h = col('h', default=cosmo_fid['h'])
+    omega_nu = cosmo_fid['omega_ncdm']
+    # mnu = col('Mnu', 'm_ncdm', default=...)
+    # omega_nu = mnu / 93.14
+
+    Omega_m = (wc + wb + omega_nu) / h**2
+    if np.isscalar(Omega_m):
+        Omega_m = np.full(n, Omega_m)
+    return Omega_m
+
+
 def add_Omega_m(samples, comm=None):
     """
-    Computes Omega_m = (omega_cdm + omega_b + m_ncdm/93.14) / h^2 and adds it to the GetDist samples.
+    Adds Omega_m (see :func:`compute_Omega_m`) to the GetDist samples.
 
     Symmetric with :func:`add_sigma8`: only rank 0 of ``comm`` mutates ``samples``;
     other ranks return ``samples`` unchanged.
@@ -122,46 +227,11 @@ def add_Omega_m(samples, comm=None):
     if rank != 0:
         return samples
 
-    n = samples.samples.shape[0]
-    
-    # Default to fiducial values if parameters are not in the chain
-    wc = cosmo_fid['omega_cdm']
-    wb = cosmo_fid['omega_b']
-    h = cosmo_fid['h']
-    
-    # Get neutrino mass (handle if it's an array/tuple in some cosmoprimo versions)
-    mnu = cosmo_fid['m_ncdm']
-    omega_nu = cosmo_fid['omega_ncdm']
-    if isinstance(mnu, (list, tuple, np.ndarray)):
-        mnu = np.sum(mnu)
-    
-    if 'wc' in samples.index:
-        wc = samples.samples[:, samples.index['wc']]
-    elif 'omega_cdm' in samples.index:
-        wc = samples.samples[:, samples.index['omega_cdm']]
-        
-    if 'wb' in samples.index:
-        wb = samples.samples[:, samples.index['wb']]
-    elif 'omega_b' in samples.index:
-        wb = samples.samples[:, samples.index['omega_b']]
-        
-    if 'h' in samples.index:
-        h = samples.samples[:, samples.index['h']]
-
-    # if 'Mnu' in samples.index:
-    #     mnu = samples.samples[:, samples.index['Mnu']]
-    # elif 'm_ncdm' in samples.index:
-    #     mnu = samples.samples[:, samples.index['m_ncdm']]
-        
-    # omega_nu = mnu / 93.14
-    Omega_m = (wc + wb + omega_nu) / h**2
-    if np.isscalar(Omega_m):
-        Omega_m = np.full(n, Omega_m)
-        
+    Omega_m = compute_Omega_m(samples.samples, samples.getParamNames().list())
     samples.addDerived(Omega_m, name='Omega_m', label=r'\Omega_m')
     samples.updateBaseStatistics()
-    
-    return samples  
+
+    return samples
 
 
 def export_to_text(samples, out_fn, comm=None, engine='class', which='cb'):
