@@ -106,11 +106,16 @@ def get_samples(fn, drop_w0pwag0=False, return_attrs=False):
 
     return samples
 
-def save_samples(samples, fn):
+def save_samples(samples, fn, attrs=None):
     """Write an MCSamples object to the same .h5 schema read by get_samples
     (points/log_weights/log_likelihoods/names/latex_names), so derived
     parameters added via samples.addDerived (e.g. sigma8, Omega_m) are
-    persisted and the file can be reloaded with get_samples."""
+    persisted and the file can be reloaded with get_samples.
+
+    If `attrs` is given (e.g. the dict returned by get_samples(..., return_attrs=True)),
+    it is written back as HDF5 attrs on the file, so metadata recorded by the
+    run that produced the chain (tracer, de_model, units, ...) survives a
+    resave."""
     import h5py
     names = samples.getParamNames().list()
     labels = samples.getParamNames().labels()
@@ -121,6 +126,8 @@ def save_samples(samples, fn):
         f.create_dataset('log_likelihoods', data=samples.loglikes)
         f.create_dataset('names', data=names, dtype=str_dtype)
         f.create_dataset('latex_names', data=labels, dtype=str_dtype)
+        for key, value in (attrs or {}).items():
+            f.attrs[key] = value
 
 
 def plot_triangle(samples_list, params_to_plot=None, labels=None, width_inch=14, cmap=None, settings_dict=None,

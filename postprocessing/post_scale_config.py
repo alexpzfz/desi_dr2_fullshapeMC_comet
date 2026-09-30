@@ -2,9 +2,9 @@
 
 For every (tracer, de_model) pair found in outputs/chains/scale_config:
   - loads the Mpc and Mpc/h chains,
-  - adds sigma8 and Omega_m as derived parameters to each (or reuses a
-    previously-saved '<stem>_derived.h5' chain if one is found, so this
-    expensive step only has to run once -- see --force to bypass it),
+  - adds sigma8 and Omega_m as derived parameters to each, in place, unless
+    they're already present (see augment_chain.py; pass --force to bypass
+    this cache and recompute anyway),
   - overplots the two unit conventions on a single triangle plot of the
     sampled cosmological parameters.
 
@@ -14,9 +14,9 @@ spaces: {h, wc, As} and {h, Omega_m, sigma8}.
 
 The sigma8/Omega_m computation is the slow part (one CLASS/CAMB/emulator
 call per sample) and should be run under MPI (see
-submit/submit_post_scale_config.sh), not on a login node. Once the
-'_derived.h5' chains exist, rerunning this script to tweak a plot is cheap
-and can be done directly on a login node.
+submit/submit_post_scale_config.sh), not on a login node. Once the chains
+already carry sigma8/Omega_m, rerunning this script to tweak a plot is
+cheap and can be done directly on a login node.
 """
 import os
 import re
@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import env  # noqa: F401
 import plot_utils as pu
-from postprocess import add_Omega_m, add_sigma8
+from augment_chain import augment_chain
 from fit_cutsky_abacushf import tracer_label_dict
 from mpi4py import MPI
 
@@ -89,41 +89,22 @@ def get_cosmo_params_to_plot(de_model):
     return params
 
 
-def load_and_augment(files, engine='comet', save_dir=None, force=False):
+def load_and_augment(files, engine='comet', output_dir=None, force=False):
     """Load the Mpc/Mpc-h chains for one (tracer, de_model) group, adding the
-    sigma8 and Omega_m derived parameters to each.
+    sigma8 and Omega_m derived parameters to each via augment_chain.
 
-    If save_dir is given and a previously-saved '<original stem>_derived.h5'
-    is found there, it is loaded directly instead of recomputing sigma8/
-    Omega_m (pass force=True to ignore the cache and recompute anyway).
-    Newly-computed augmented chains are written to save_dir (rank 0 only)
-    so that a later run -- e.g. just to tweak a plot -- can reuse them."""
+    By default this augments each chain file in place (safely -- see
+    augment_chain.augment_chain), so a chain that already carries
+    sigma8/Omega_m is loaded as-is and left untouched; pass force=True to
+    recompute anyway. Pass output_dir to instead write the augmented chains
+    there, leaving the original chain files untouched."""
     samples = {}
     for unit, fn in files.items():
-        derived_fn = (save_dir / f'{fn.stem}_derived.h5') if save_dir is not None else None
-
-        if derived_fn is not None and derived_fn.exists() and not force:
-            try:
-                samples[unit] = pu.get_samples(str(derived_fn))
-                if rank == 0:
-                    print(f"Loaded cached augmented chain from {derived_fn}")
-                continue
-            except Exception as e:
-                if rank == 0:
-                    print(f"Could not load cached chain {derived_fn} ({e}); recomputing.")
-
-        try:
-            s = pu.get_samples(str(fn))
-        except FileNotFoundError:
+        if not fn.exists():
             print(f"File not found: {fn}")
             continue
-        s = add_Omega_m(s, comm=comm)
-        s = add_sigma8(s, comm=comm, engine=engine)
-        samples[unit] = s
-        if rank == 0 and derived_fn is not None:
-            os.makedirs(derived_fn.parent, exist_ok=True)
-            pu.save_samples(s, str(derived_fn))
-            print(f"Saved augmented chain to {derived_fn}")
+        output = (output_dir / fn.name) if output_dir is not None else None
+        samples[unit] = augment_chain(fn, engine=engine, output=output, force=force)
     return samples
 
 
@@ -170,21 +151,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--chain_dir', type=str, default=str(env.CHAINS_DIR / 'scale_config'))
     parser.add_argument('--plot_dir', type=str, default=str(env.PLOTS_DIR_SCALE_CONFIG))
-    parser.add_argument('--derived_chain_dir', type=str, default=None,
-                         help="Where to save the chains augmented with sigma8/Omega_m, as "
-                              "'<original stem>_derived.h5'. Defaults to --chain_dir (alongside "
-                              "the original chains). Pass '' to skip saving them.")
+    parser.add_argument('--output_dir', type=str, default=None,
+                         help="Where to write the chains augmented with sigma8/Omega_m. "
+                              "Default: augment each chain file in --chain_dir in place, "
+                              "safely (see augment_chain.py), instead of writing a new file.")
     parser.add_argument('--engine', type=str, default='comet', choices=['comet', 'class', 'camb'],
                          help="Engine used to compute sigma8 (see postprocess.add_sigma8).")
     parser.add_argument('--force', action='store_true',
-                         help="Recompute sigma8/Omega_m even if a cached '<stem>_derived.h5' "
-                              "chain is found in --derived_chain_dir.")
+                         help="Recompute sigma8/Omega_m even if a chain already has them.")
     args = parser.parse_args()
 
     chain_dir = Path(args.chain_dir)
     plot_dir = Path(args.plot_dir)
-    derived_chain_dir = args.chain_dir if args.derived_chain_dir is None else args.derived_chain_dir
-    derived_chain_dir = Path(derived_chain_dir) if derived_chain_dir else None
+    output_dir = Path(args.output_dir) if args.output_dir else None
 
     groups = discover_chains(chain_dir)
     if not groups:
@@ -195,7 +174,7 @@ if __name__ == "__main__":
     for (tracer, de_model), files in sorted(groups.items()):
         if rank == 0:
             print(f"Processing {tracer}, {de_model}: {sorted(files)}")
-        samples = load_and_augment(files, engine=args.engine, save_dir=derived_chain_dir, force=args.force)
+        samples = load_and_augment(files, engine=args.engine, output_dir=output_dir, force=args.force)
         all_samples[de_model][tracer] = samples
         plot_units_contour(tracer, de_model, samples, plot_dir)
 
