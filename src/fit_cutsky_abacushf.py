@@ -197,13 +197,20 @@ def set_flat_linear_priors(pars, am_params, nz):
             pars.update_prior(f'{p}_{iz}' if nz > 1 else p, None, None)
 
 
+def abacus_cosmo_values(name):
+    """AbacusSummit cosmology `name` in terms of all the cosmological parameter
+    names priors_mc may sample (log10As is ln(1e10 As))."""
+    c = get_abacus_cosmology(name)
+    w0, wa = c['w0_fld'], c['wa_fld']
+    return {'wb': c['omega_b'], 'wc': c['omega_cdm'], 'h': c['h'], 'ns': c['n_s'], 'log10As': c['logA'],
+            'Mnu': c['m_ncdm'], 'w0': w0, 'wa': wa, 'w0pwa': w0 + wa, 'w0mwa': w0 - wa}
+
+
 def abacus_sampled_cosmo(name, pars):
     """AbacusSummit cosmology `name`, in terms of the sampled cosmological
     parameter names of `pars` (log10As is ln(1e10 As), as in priors_mc)."""
-    c = get_abacus_cosmology(name)
-    w0, wa = c['w0_fld'], c['wa_fld']
-    values = {'wb': c['omega_b'], 'wc': c['omega_cdm'], 'h': c['h'], 'ns': c['n_s'], 'log10As': c['logA'],
-              'Mnu': c['m_ncdm'], 'w0': w0, 'wa': wa, 'w0pwa': w0 + wa, 'w0mwa': w0 - wa}
+    values = abacus_cosmo_values(name)
+    w0, wa = values['w0'], values['wa']
     if pars.de_model == 'lambda' and (w0 != -1. or wa != 0.):
         raise ValueError(f"Abacus cosmology {name} has w0={w0}, wa={wa}, but the chain was run with de_model='lambda'.")
     if pars.de_model == 'w0' and wa != 0.:
@@ -220,6 +227,8 @@ def fix_cosmology(pars, name):
     cosmo = abacus_sampled_cosmo(name, pars)
     for p, value in cosmo.items():
         pars.set_and_fix_param(p, value)
+    # remembered so that gen_synth_data.py can override them
+    pars.fixed_cosmo_names = list(cosmo)
     return cosmo
 
 

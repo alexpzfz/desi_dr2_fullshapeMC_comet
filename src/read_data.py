@@ -323,7 +323,9 @@ def get_obs_pk_cached(tracer, zrange, region, mocktype, kmin=0.02, kmax=0.3,
             fn_cov = fn_cov_list[0]
         # read number of mocks from the filename
         print(f"Using covariance file: {fn_cov}")
-        n_mocks_cov = int(fn_cov.stem.split('nmocks')[1])
+        # nmocks0: analytic covariance (e.g. gen_synth_data.py --gaussian_cov),
+        # so no Hartlap/Percival correction
+        n_mocks_cov = int(fn_cov.stem.split('nmocks')[1]) or None
         cov = np.loadtxt(fn_cov)
         cov = cut_cov(cov, k, ell=[0, 2, 4], ell_select=ell)
     
