@@ -25,6 +25,9 @@ truncated.
 sigma8 is the slow part (one CLASS/CAMB/emulator call per sample) and
 should be run under MPI for any non-trivial chain:
     mpirun -n <N> python augment_chain.py <chain.h5> [chain2.h5 ...] [options]
+From Python, augment_chain(..., pool=<multiprocessing.Pool>) parallelizes over
+the pool's workers instead, from a single (non-MPI) process; this is what
+src/fit_cutsky_abacushf.py --augment_chain uses right after a nautilus run.
 The COMET emulator is only loaded when --engine comet is used.
 
 Derived parameters are only computed for samples with non-zero weight. The
@@ -49,16 +52,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import env  # noqa: F401
 import h5py
 import numpy as np
-from postprocess import compute_Omega_m, compute_sigma8
-from mpi4py import MPI
+from postprocess import COMM_WORLD, compute_Omega_m, compute_sigma8
 
-comm = MPI.COMM_WORLD
+comm = COMM_WORLD  # serial stand-in if mpi4py is not installed
 rank = comm.Get_rank()
 
-# name -> (latex label, fn(points, names, engine) returning the column on rank 0)
+# name -> (latex label, fn(points, names, engine, pool) returning the column on rank 0)
 DERIVED_PARAMS = {
-    'sigma8': (r'\sigma_8', lambda points, names, engine: compute_sigma8(points, names, comm=comm, engine=engine)),
-    'Omega_m': (r'\Omega_m', lambda points, names, engine: compute_Omega_m(points, names)),
+    'sigma8': (r'\sigma_8', lambda points, names, engine, pool: compute_sigma8(points, names, comm=comm,
+                                                                               engine=engine, pool=pool)),
+    'Omega_m': (r'\Omega_m', lambda points, names, engine, pool: compute_Omega_m(points, names)),
 }
 CHAIN_DATASETS = ('points', 'names', 'latex_names')
 
@@ -90,14 +93,17 @@ def write_chain(src_file, dst_file, points, names, labels, attrs):
 
 
 def augment_chain(chain_file, params=('sigma8', 'Omega_m'), engine='comet', output=None,
-                   force=False, keep_backup=False):
+                   force=False, keep_backup=False, pool=None):
     """Load `chain_file`, add any of `params` not already present as derived
     parameters, and write the result to `output` (default: overwrite
     `chain_file` in place, safely -- see module docstring).
 
-    All ranks of MPI.COMM_WORLD must call this together (the derived-param
-    computation is parallelized across them); only rank 0 writes to disk.
+    Without `pool`, all ranks of MPI.COMM_WORLD must call this together (the
+    derived-param computation is parallelized across them); only rank 0 writes
+    to disk. With `pool` (e.g. a multiprocessing.Pool), the computation is
+    spread over its workers instead and this process does all the I/O.
     """
+    is_root = pool is not None or rank == 0
     chain_file = Path(chain_file)
     in_place = output is None
     target = chain_file if in_place else Path(output)
@@ -108,30 +114,30 @@ def augment_chain(chain_file, params=('sigma8', 'Omega_m'), engine='comet', outp
 
     points, log_weights, names, labels, attrs = read_chain(chain_file)
     valid = np.isfinite(log_weights)
-    if rank == 0 and not valid.all():
+    if is_root and not valid.all():
         print(f"{chain_file.name}: {(~valid).sum()}/{valid.size} samples have zero weight, "
               "setting their derived parameters to NaN.")
 
     to_add = [p for p in params if force or p not in names]
     skipped = [p for p in params if p not in to_add]
-    if rank == 0 and skipped:
+    if is_root and skipped:
         print(f"{chain_file.name}: {skipped} already present, skipping (pass --force to recompute).")
 
     if not to_add:
-        if rank == 0 and not in_place:
+        if is_root and not in_place:
             shutil.copy2(chain_file, target)
         return
 
     backup = None
-    if rank == 0 and in_place:
+    if is_root and in_place:
         backup = chain_file.with_name(chain_file.name + '.bak')
         shutil.copy2(chain_file, backup)
 
     try:
         for name in to_add:
             label, compute = DERIVED_PARAMS[name]
-            valid_values = compute(points[valid], names, engine)
-            if rank != 0:
+            valid_values = compute(points[valid], names, engine, pool)
+            if not is_root:
                 continue
             values = np.full(len(points), np.nan)
             values[valid] = valid_values
@@ -148,7 +154,7 @@ def augment_chain(chain_file, params=('sigma8', 'Omega_m'), engine='comet', outp
         if 'sigma8' in to_add:
             attrs = {**attrs, 'sigma8_engine': engine}
 
-        if rank == 0:
+        if is_root:
             os.makedirs(target.parent, exist_ok=True)
             fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix='.h5')
             os.close(fd)
@@ -160,7 +166,7 @@ def augment_chain(chain_file, params=('sigma8', 'Omega_m'), engine='comet', outp
                 raise
             print(f"Saved augmented chain ({', '.join(to_add)}) to {target}")
     finally:
-        if rank == 0 and backup is not None:
+        if is_root and backup is not None:
             if keep_backup:
                 print(f"Kept backup at {backup}")
             else:

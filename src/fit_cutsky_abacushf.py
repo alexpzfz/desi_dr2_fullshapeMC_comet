@@ -441,6 +441,13 @@ if __name__ == "__main__":
     parser.add_argument('--plot_contours', action='store_true', help="After the Nautilus chain finishes, plot the triangle/contour plot for the cosmological parameters and save it to --plot_dir. Not used with --minimize.")
     parser.add_argument('--plot_bestfit', action='store_true', help="Only used with --minimize. After each minimization stage, "
                         "plot the best-fit model on top of the data (one figure per tracer) and save it to --plot_dir.")
+    parser.add_argument('--augment_chain', action='store_true', help="Not used with --minimize. After the Nautilus chain "
+                        "is saved, add derived parameters (see --augment_params) to it in place, as "
+                        "postprocessing/augment_chain.py does, on a process pool with one worker per available CPU.")
+    parser.add_argument('--augment_params', type=str, nargs='+', default=['sigma8', 'Omega_m'],
+                        choices=['sigma8', 'Omega_m'], help="Derived parameters to add with --augment_chain.")
+    parser.add_argument('--augment_engine', type=str, default='comet', choices=['comet', 'class', 'camb'],
+                        help="Engine used to compute sigma8 with --augment_chain.")
     parser.add_argument('--plot_dir', type=str, default=str(env.PLOTS_DIR_CUTSKY_ABACUSHF), help="Directory to store the plots in, when --plot_contours or --plot_bestfit is set.")
     parser.add_argument('--time_likelihood', type=int, default=None, help="Instead of minimizing/sampling, time this many "
                         "calls to likelihood.get_loglike() at the YAML-default fiducial value of each free parameter, "
@@ -457,6 +464,8 @@ if __name__ == "__main__":
         parser.error("--jeffreys_check_full requires --reparam jeffreys, --minimize and --minimize_mode am_then_full.")
     if args.plot_bestfit and not args.minimize:
         parser.error("--plot_bestfit requires --minimize.")
+    if args.augment_chain and args.minimize:
+        parser.error("--augment_chain cannot be used with --minimize.")
 
     print(f"Fitting tracer(s) {args.tracer_label} in region {args.region}")
     if args.mocktype or args.mocktype_cov or args.data_dir:
@@ -739,8 +748,36 @@ if __name__ == "__main__":
         run_metadata = {**vars(args), 'mocktypes_used': mocktypes_used, 'mocktypes_cov_used': mocktypes_cov_used,
                          'n_threads': n_threads, 'pool_size': n_workers, 'threads_per_worker': threads_per_worker,
                          'discard_exploration': True, 'elapsed_minutes': (t1 - t0) / 60}
-        sampler.save(fn, metadata=run_metadata)
+        sampler.save(fn, metadata=run_metadata, save_txt=True)
         print(f"Chain saved to {fn}")
+
+        if args.augment_chain and args.fix_cosmo is not None:
+            print("Cosmology is fixed (--fix_cosmo): no derived cosmological parameters to add.")
+        elif args.augment_chain:
+            import multiprocessing as mp
+            sys.path.insert(0, str(env.REPO_ROOT / 'postprocessing'))
+            from augment_chain import augment_chain
+            import postprocess
+            # sigma8 (the only slow part) is single-threaded per sample
+            # (emulator + quad for comet, CLASS/CAMB with OMP_NUM_THREADS=1;
+            # no numba), so use one worker per CPU rather than the nautilus
+            # n_workers x threads_per_worker layout.
+            print(f"Adding derived parameters {args.augment_params} (engine: {args.augment_engine}) "
+                  f"to the chain using {n_threads} pool worker(s)...")
+            t0 = time.time()
+            try:
+                if args.augment_engine == 'comet' and 'sigma8' in args.augment_params:
+                    # Load the emulator before forking so the workers share it
+                    # copy-on-write instead of each loading its own.
+                    postprocess._get_emu()
+                with mp.get_context('fork').Pool(n_threads) as pool:
+                    augment_chain(fn + '.h5', params=args.augment_params, engine=args.augment_engine, pool=pool)
+                print(f"Derived parameters added in {(time.time() - t0)/60:.2f} minutes.")
+            except Exception as e:
+                # The chain itself is already saved (and augment_chain never
+                # leaves it half-written); don't let this look like the run failed.
+                print(f"Warning: failed to add derived parameters ({e}). Chain is still saved at {fn}; "
+                      "run postprocessing/augment_chain.py on it instead.")
 
         if args.plot_contours and args.fix_cosmo is not None:
             print("Cosmology is fixed (--fix_cosmo): no cosmological contours to plot.")

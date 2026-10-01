@@ -1,10 +1,29 @@
 import numpy as np
-from mpi4py import MPI
+from functools import partial
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import env  # noqa: F401
 from abacus_cosmologies import get_abacus_cosmology
+
+
+class _SerialComm:
+    """Single-process stand-in for an mpi4py communicator (the subset used
+    here), for environments without mpi4py (e.g. the raven 'fs' env)."""
+    def Get_rank(self): return 0
+    def Get_size(self): return 1
+    def gather(self, obj, root=0): return [obj]
+    def allgather(self, obj): return [obj]
+    def Gatherv(self, sendbuf, recvbuf, root=0): recvbuf[0][:] = sendbuf
+    def Barrier(self): pass
+    def Abort(self, errorcode=0): sys.exit(errorcode)
+
+
+try:
+    from mpi4py import MPI
+    COMM_WORLD = MPI.COMM_WORLD
+except ImportError:
+    COMM_WORLD = _SerialComm()
 
 COSMOPRIMO_MAPPING = {
     'wb': 'omega_b',
@@ -109,19 +128,53 @@ def _compute_sigma8_comet(params):
     return _get_emu().sigmaR(scale, FIDUCIAL_COMET | params, de_model=de_model)
 
 
-def compute_sigma8(points, names, comm=None, engine='class', which='cb'):
+def _compute_sigma8_row(row, cosmo_names, cp_names, engine, which):
+    """sigma8 for one sample `row` (columns `cosmo_names`, cosmoprimo names
+    `cp_names`). Returns (sigma8, label of the method used or None for comet)."""
+    if engine == 'comet':
+        return _compute_sigma8_comet(dict(zip(cosmo_names, row))), None
+    return _compute_sigma8_with_fallbacks(dict(zip(cp_names, row)), engine, which)
+
+
+def _compute_sigma8_rows(points, cosmo_names, cp_names, engine, which, pool=None):
+    """sigma8 for each row of `points`, over `pool` if given. Returns
+    (sigma8 array, {method label: count})."""
+    row_fn = partial(_compute_sigma8_row, cosmo_names=cosmo_names, cp_names=cp_names, engine=engine, which=which)
+    results = pool.map(row_fn, points) if pool is not None else [row_fn(row) for row in points]
+    methods = {}
+    for _, method in results:
+        if method is not None:
+            methods[method] = methods.get(method, 0) + 1
+    return np.array([s for s, _ in results], dtype=float), methods
+
+
+def _report_sigma8_methods(all_methods, engine, n):
+    if engine not in ['class', 'camb']:
+        return
+    methods = {}
+    for m in all_methods:
+        for k, v in m.items():
+            methods[k] = methods.get(k, 0) + v
+    default = _fallback_label(*SIGMA8_FALLBACKS[engine][0])
+    if set(methods) - {default}:
+        print(f"sigma8 methods used over {n} samples -- " + ', '.join(f"{k}: {v}" for k, v in methods.items()))
+
+
+def compute_sigma8(points, names, comm=None, engine='class', which='cb', pool=None):
     """Compute sigma8 for each row of `points` (columns named by `names`).
 
-    MPI-collective: the rows are split across the ranks of ``comm``. Returns the
-    full sigma8 array on rank 0 and ``None`` on the other ranks.
+    By default this is MPI-collective: the rows are split across the ranks of
+    ``comm``, and the full sigma8 array is returned on rank 0 (``None`` on the
+    other ranks).
+
+    If ``pool`` is given (e.g. a ``multiprocessing.Pool``; anything with a
+    ``map``), the rows are instead split across its workers from this single process, ``comm`` is ignored, and the full
+    array is always returned. Use this from a non-MPI job (e.g. right after a
+    nautilus run, see src/fit_cutsky_abacushf.py --augment_chain).
     """
     _engine_options = ['class', 'camb', 'comet']
     if engine not in _engine_options:
         raise ValueError(f"Invalid engine '{engine}'. Valid options are: {_engine_options}")
-    if comm is None:
-        comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
 
     names = list(names)
     cosmo_names = [n for n in names if n in COSMOPRIMO_MAPPING]
@@ -130,19 +183,19 @@ def compute_sigma8(points, names, comm=None, engine='class', which='cb'):
     points = np.asarray(points)[:, idx]
     n = points.shape[0]
 
+    if pool is not None:
+        sigma8, methods = _compute_sigma8_rows(points, cosmo_names, cp_names, engine, which, pool=pool)
+        _report_sigma8_methods([methods], engine, n)
+        return sigma8
+
+    if comm is None:
+        comm = COMM_WORLD
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
     local_idx = np.array_split(np.arange(n), size)[rank]
-    local_methods = {}
     try:
-        if engine in ['class', 'camb']:
-            local_sigma8 = np.empty(len(local_idx), dtype=float)
-            for j, i in enumerate(local_idx):
-                local_sigma8[j], method = _compute_sigma8_with_fallbacks(dict(zip(cp_names, points[i])), engine, which)
-                local_methods[method] = local_methods.get(method, 0) + 1
-        elif engine == 'comet':
-            local_sigma8 = np.array(
-                [_compute_sigma8_comet(dict(zip(cosmo_names, points[i]))) for i in local_idx],
-                dtype=float,
-            )
+        local_sigma8, local_methods = _compute_sigma8_rows(points[local_idx], cosmo_names, cp_names, engine, which)
     except BaseException:
         # Any other error on one rank would leave the others blocked in the
         # collectives below; abort the whole job instead of hanging.
@@ -154,14 +207,8 @@ def compute_sigma8(points, names, comm=None, engine='class', which='cb'):
         raise
 
     all_methods = comm.gather(local_methods, root=0)
-    if rank == 0 and engine in ['class', 'camb']:
-        methods = {}
-        for m in all_methods:
-            for k, v in m.items():
-                methods[k] = methods.get(k, 0) + v
-        default = _fallback_label(*SIGMA8_FALLBACKS[engine][0])
-        if set(methods) - {default}:
-            print(f"sigma8 methods used over {n} samples -- " + ', '.join(f"{k}: {v}" for k, v in methods.items()))
+    if rank == 0:
+        _report_sigma8_methods(all_methods, engine, n)
 
     counts = comm.allgather(local_sigma8.size)
     sigma8 = np.empty(n, dtype=local_sigma8.dtype) if rank == 0 else None
@@ -171,7 +218,7 @@ def compute_sigma8(points, names, comm=None, engine='class', which='cb'):
 
 def add_sigma8(samples, comm=None, engine='class', which='cb'):
     if comm is None:
-        comm = MPI.COMM_WORLD
+        comm = COMM_WORLD
     sigma8 = compute_sigma8(samples.samples, samples.getParamNames().list(),
                             comm=comm, engine=engine, which=which)
     if comm.Get_rank() == 0:
@@ -218,7 +265,7 @@ def add_Omega_m(samples, comm=None):
     other ranks return ``samples`` unchanged.
     """
     if comm is None:
-        comm = MPI.COMM_WORLD
+        comm = COMM_WORLD
     rank = comm.Get_rank()
 
     if 'Omega_m' in samples.index:
@@ -243,7 +290,7 @@ def export_to_text(samples, out_fn, comm=None, engine='class', which='cb'):
     the output file and returns the data array; other ranks return ``None``.
     """
     if comm is None:
-        comm = MPI.COMM_WORLD
+        comm = COMM_WORLD
     rank = comm.Get_rank()
 
     # both are collective; only rank 0 receives the updated samples
