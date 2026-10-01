@@ -76,7 +76,7 @@ def _fmt_float(x):
 def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, kmaxB=None,
            de_model='lambda', reparam_option='full', free_Mnu=False, outdir=str(env.CHAINS_DIR), extra=None,
            counterterm_basis='DESIct', avirB_free=False, use_Mpc=True, zeff_choice='zsnap', sigma_kind=None, rotatew0wa=False, model='VDG',
-           fix_cosmo=None, cnlo_free=False):
+           fix_cosmo=None, cnlo_free=False, fix_ns=False):
 
     if not isinstance(tracer_label, list):
         tracer_label = [tracer_label] 
@@ -125,7 +125,8 @@ def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, km
         fn += '_freecnlo'
     if fix_cosmo is not None:
         fn += f'_fixcosmo{fix_cosmo}'
-
+    if fix_ns:
+        fn += '_fixedns'
     if extra is not None:
         fn += f'_{extra}'
     return fn
@@ -237,6 +238,8 @@ def build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array):
     pars.emu.use_interp_kwin = True
     if getattr(args, 'fix_cosmo', None) is not None:
         fix_cosmology(pars, args.fix_cosmo)
+    if getattr(args, 'fix_ns', False):
+        pars.set_and_fix_param('ns', 0.9649)
     return pars
 
 
@@ -246,6 +249,8 @@ def get_cosmo_params_to_plot(args):
     if getattr(args, 'fix_cosmo', None) is not None:
         return []
     params =['wb', 'wc', 'h', 'ns', 'log10As']
+    if getattr(args, 'fix_ns', False):
+        params.remove('ns')
     if args.de_model in ('w0', 'w0wa'):
         params.append('w0')
     if args.de_model == 'w0wa':
@@ -410,6 +415,7 @@ if __name__ == "__main__":
     parser.add_argument('--counterterm_basis', type=str, default='DESIct', choices=['DESIct', 'Comet'])
     parser.add_argument('--freedom', type=str, default='interm', choices=['min', 'max', 'interm'])
     parser.add_argument('--free_Mnu', action='store_true')
+    parser.add_argument('--fix_ns', action='store_true', help="Fix the spectral index ns to Planck's value 0.9649 instead of sampling it.")
     parser.add_argument('--fix_cosmo', type=str, nargs='?', const='c000', default=None,
                         help="Fix the cosmological parameters to this AbacusSummit cosmology (default when given without "
                              "a value: c000, the true cosmology of the mocks) and fit only the nuisance parameters. "
@@ -476,6 +482,8 @@ if __name__ == "__main__":
     print(f"Model: {args.model}{' (free cnlo)' if args.free_cnlo else ''}, DE model: {args.de_model}, reparametrization: {args.reparam}, freedom: {args.freedom}, free_Mnu: {args.free_Mnu}, counterterm_basis: {args.counterterm_basis}, units: {'Mpc/h' if args.mpc_h else 'Mpc'}, zeff_choice: {args.zeff_choice}")
     if args.fix_cosmo is not None:
         print(f"Cosmology fixed to AbacusSummit {args.fix_cosmo}: fitting only the nuisance parameters.")
+    if args.fix_ns:
+        print(f"Spectral index ns fixed to 0.9649 instead of sampling it.")
 
 
     tracer_list = []
@@ -607,7 +615,7 @@ if __name__ == "__main__":
                 de_model=args.de_model, reparam_option=args.reparam, free_Mnu=args.free_Mnu, outdir=args.outdir, extra=extra,
                 counterterm_basis=args.counterterm_basis, avirB_free=args.avirB_free, use_Mpc=not args.mpc_h,
                 zeff_choice=args.zeff_choice, sigma_kind=args.sigma_kind, rotatew0wa=args.rotatew0wa,
-                model=args.model, fix_cosmo=args.fix_cosmo, cnlo_free=args.free_cnlo)
+                model=args.model, fix_cosmo=args.fix_cosmo, cnlo_free=args.free_cnlo, fix_ns=args.fix_ns)
     if args.minimize and args.minimize_mode == 'simplex_full':
         # Skip the AM stage: run SIMPLEX on the full likelihood (all nuisance
         # parameters sampled directly) as the first step, then MIGRAD.

@@ -22,6 +22,7 @@ if [ -n "${NERSC_HOST:-}" ]; then
     source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main
 else
     module load python-waterboa/2024.06
+    module load texlive
     source "$(conda info --base)/etc/profile.d/conda.sh"
     conda activate fs
 fi
