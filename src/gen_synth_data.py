@@ -111,6 +111,8 @@ def get_run_args(attrs):
         zeff_choice=str(_attr(attrs, 'zeff_choice', 'zsnap')),
         fix_cosmo=_attr(attrs, 'fix_cosmo'),
         free_cnlo=bool(_attr(attrs, 'free_cnlo', False)),
+        fix_ns=bool(_attr(attrs, 'fix_ns', False)),
+        bind_NB0=bool(_attr(attrs, 'bind_NB0', False)),
     )
 
 

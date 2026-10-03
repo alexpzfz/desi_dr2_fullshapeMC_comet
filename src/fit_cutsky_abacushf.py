@@ -76,7 +76,7 @@ def _fmt_float(x):
 def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, kmaxB=None,
            de_model='lambda', reparam_option='full', free_Mnu=False, outdir=str(env.CHAINS_DIR), extra=None,
            counterterm_basis='DESIct', avirB_free=False, use_Mpc=True, zeff_choice='zsnap', sigma_kind=None, rotatew0wa=False, model='VDG',
-           fix_cosmo=None, cnlo_free=False, fix_ns=False):
+           fix_cosmo=None, cnlo_free=False, fix_ns=False, bind_NB0=False):
 
     if not isinstance(tracer_label, list):
         tracer_label = [tracer_label] 
@@ -127,6 +127,8 @@ def get_fn(tracer_label, region, freedom, dkP, kmaxP, bispec=False, dkB=None, km
         fn += f'_fixcosmo{fix_cosmo}'
     if fix_ns:
         fn += '_fixedns'
+    if bind_NB0:
+        fn += '_bindNB0'
     if extra is not None:
         fn += f'_{extra}'
     return fn
@@ -174,15 +176,17 @@ def get_prior_refs(tracer_list, zrange_list):
     return np.array(b1_ref, dtype=float), np.array(sigmaR_ref, dtype=float), np.array(sigma1_eff, dtype=float), np.array(fsat, dtype=float)
 
 
-def get_am_params(counterterm_basis, bispec, reparam, cnlo_free=False):
+def get_am_params(counterterm_basis, bispec, reparam, cnlo_free=False, bind_NB0=False):
     """Linear nuisance parameters to analytically marginalise. With
-    reparam='jeffreys' they are not reparametrised (no '_r' suffix)."""
+    reparam='jeffreys' they are not reparametrised (no '_r' suffix). With
+    bind_NB0, NB0 = NP0^2 makes the model non-linear in NP0, so NP0 is
+    sampled instead and NB0 is not a free parameter."""
     ct = ['a0', 'a2'] if counterterm_basis == 'DESIct' else ['c0', 'c2']
     if cnlo_free:
         ct.append('cnlo')
-    am_params = ['btd'] + ct + ['NP0', 'NP20', 'NP22']
+    am_params = ['btd'] + ct + (['NP20', 'NP22'] if bispec and bind_NB0 else ['NP0', 'NP20', 'NP22'])
     if bispec:
-        am_params += ['NB0', 'MB0']
+        am_params += ['MB0'] if bind_NB0 else ['NB0', 'MB0']
     if reparam in ('full', 'hybrid'):
         am_params = [f'{p}_r' for p in am_params]
     return am_params
@@ -239,7 +243,8 @@ def build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array):
                      b1_ref=b1_ref, sigmaR_ref=sigmaR_ref, sigma1_eff=sigma1_eff, fsat=fsat,
                      z_array=z_array, counterterm_basis=args.counterterm_basis,
                      avirB_free=args.avirB_free, use_Mpc=not args.mpc_h, sigma_kind=args.sigma_kind, rotatew0wa=args.rotatew0wa,
-                     model=args.model, cnlo_free=getattr(args, 'free_cnlo', False))
+                     model=args.model, cnlo_free=getattr(args, 'free_cnlo', False),
+                     bind_NB0=getattr(args, 'bind_NB0', False))
     if args.bispec:
         pars.emu.bispec_kwargs['sugiyama']['quad_deg'] = (7, 16, 5)
         pars.emu.bispec_kwargs['sugiyama']['mu12_transform'] = 'k3'
@@ -396,6 +401,9 @@ if __name__ == "__main__":
     parser.add_argument('--kwinmaxP', type=float, default=0.5, nargs='*')
     parser.add_argument('--dkP', type=float, default=0.005)
     parser.add_argument('--bispec', action='store_true')
+    parser.add_argument('--bind_NB0', action='store_true', help="Only used with --bispec: tie the bispectrum shot noise "
+                        "NB0 to the power spectrum one, NB0 = NP0^2, instead of sampling it. NP0 is then sampled instead of "
+                        "analytically marginalised. Reflected in the output filename.")
     parser.add_argument('--avirB_free', action='store_true', help="Sample avirB as a free parameter instead of tying it to avir (the default when --bispec is set).")
     parser.add_argument('--ellB', type=_parse_tuple_ell, nargs='*', default=[(0, 0, 0), (2, 0, 2)])
     parser.add_argument('--kminB', type=float, default=0.02, nargs='*')
@@ -477,6 +485,8 @@ if __name__ == "__main__":
         parser.error("--free_cnlo requires --model EFT.")
     if args.jeffreys_check_full and not (args.reparam == 'jeffreys' and args.minimize and args.minimize_mode == 'am_then_full'):
         parser.error("--jeffreys_check_full requires --reparam jeffreys, --minimize and --minimize_mode am_then_full.")
+    if args.bind_NB0 and not args.bispec:
+        parser.error("--bind_NB0 requires --bispec.")
     if args.plot_bestfit and not args.minimize:
         parser.error("--plot_bestfit requires --minimize.")
     if args.augment_chain and args.minimize:
@@ -493,6 +503,8 @@ if __name__ == "__main__":
         print(f"Cosmology fixed to AbacusSummit {args.fix_cosmo}: fitting only the nuisance parameters.")
     if args.fix_ns:
         print(f"Spectral index ns fixed to 0.9649 instead of sampling it.")
+    if args.bind_NB0:
+        print("NB0 tied to NP0 (NB0 = NP0^2); NP0 is sampled instead of analytically marginalised.")
 
 
     tracer_list = []
@@ -575,7 +587,8 @@ if __name__ == "__main__":
     observables = [observables[i] for i in sort_idx]
     sorted_labels = [args.tracer_label[i] for i in sort_idx]
 
-    am_params = get_am_params(args.counterterm_basis, args.bispec, args.reparam, cnlo_free=args.free_cnlo)
+    am_params = get_am_params(args.counterterm_basis, args.bispec, args.reparam, cnlo_free=args.free_cnlo,
+                              bind_NB0=args.bind_NB0)
 
     pars = build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array)
 
@@ -624,7 +637,8 @@ if __name__ == "__main__":
                 de_model=args.de_model, reparam_option=args.reparam, free_Mnu=args.free_Mnu, outdir=args.outdir, extra=extra,
                 counterterm_basis=args.counterterm_basis, avirB_free=args.avirB_free, use_Mpc=not args.mpc_h,
                 zeff_choice=args.zeff_choice, sigma_kind=args.sigma_kind, rotatew0wa=args.rotatew0wa,
-                model=args.model, fix_cosmo=args.fix_cosmo, cnlo_free=args.free_cnlo, fix_ns=args.fix_ns)
+                model=args.model, fix_cosmo=args.fix_cosmo, cnlo_free=args.free_cnlo, fix_ns=args.fix_ns,
+                bind_NB0=args.bind_NB0)
     if args.minimize and args.minimize_mode == 'simplex_full':
         # Skip the AM stage: run SIMPLEX on the full likelihood (all nuisance
         # parameters sampled directly) as the first step, then MIGRAD.

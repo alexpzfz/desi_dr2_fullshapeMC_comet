@@ -31,6 +31,7 @@ def build_likelihood_from_attrs(attrs):
         rotatew0wa=False,
         model='VDG',
         zeff_choice=str(attrs.get('zeff_choice', 'zsnap')),
+        bind_NB0=bool(attrs.get('bind_NB0', False)),
     )
 
     data_dir = attrs.get('data_dir', 'None')
@@ -74,7 +75,7 @@ def build_likelihood_from_attrs(attrs):
     z_array = z_array[sort_idx]
     observables = [observables[i] for i in sort_idx]
 
-    am_params = fc.get_am_params(args.counterterm_basis, args.bispec, args.reparam)
+    am_params = fc.get_am_params(args.counterterm_basis, args.bispec, args.reparam, bind_NB0=args.bind_NB0)
 
     pars = fc.build_pars(args, b1_ref, sigmaR_ref, sigma1_eff, fsat, z_array)
 

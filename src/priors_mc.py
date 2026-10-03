@@ -35,6 +35,10 @@ def _copy_param(p, source_name):
     """Derived-parameter function that ties a parameter to the value of another one."""
     return p[source_name]
 
+def _square_param(p, source_name):
+    """Derived-parameter function that ties a parameter to the square of another one."""
+    return p[source_name]**2
+
 
 def _compute_sigma8_ref(emu, z_array):
     """Reference sigma8 at the fiducial cosmology, evaluated at each z in z_array.
@@ -54,7 +58,8 @@ def _compute_sigma8_ref(emu, z_array):
 def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
              de_model='lambda', freedom='max', b1_ref=2.109, sigmaR_ref=0.539, sigma1_eff=150/70 * 10**(1/3) * (1 + 0.8)**(1/2), fsat=0.13,
              bispec=False, free_Mnu=False, z_array=None, ns_times_Planck=10,
-             use_Mpc=True, avirB_free=False, sigma_kind=None, rotatew0wa=False, model='VDG', cnlo_free=False):
+             use_Mpc=True, avirB_free=False, sigma_kind=None, rotatew0wa=False, model='VDG', cnlo_free=False,
+             bind_NB0=False):
     # model:
     #   'VDG' - VDG_infty model: virial damping parameters avir (and avirB for
     #           the bispectrum)
@@ -251,7 +256,18 @@ def get_pars(bias_basis='DESI', counterterm_basis='DESIct', reparam_option=None,
                 pars.set_and_fix_param(f'c4{sub_idz}', 0.)
 
         if bispec:
-            pars.update_parameter(f'NB0{subscript_linear}', 0., prior=(0, 2.), prior_type='gaussian', fixed=False)
+            if bind_NB0:
+                # NB0 = NP0^2, as for a Poisson shot noise rescaled by NP0
+                # (COMET: Pnoise = NP0/nbar, Bnoise = NP0 sum P/nbar + NB0/nbar^2).
+                # Tied to the physical NP0, so it is not sampled.
+                if reparam_linear:
+                    pars.set_and_fix_param(f'NB0{subscript_linear}', 0.)
+                pars.set_derived_param(f'NB0{sub_idz}', partial(_square_param, source_name=f'NP0{sub_idz}'), exported=False)
+                # computed after the physical NP0, which may itself be derived from NP0_r
+                pars.derived_order.remove(f'NB0{sub_idz}')
+                pars.derived_order.append(f'NB0{sub_idz}')
+            else:
+                pars.update_parameter(f'NB0{subscript_linear}', 0., prior=(0, 2.), prior_type='gaussian', fixed=False)
             pars.update_parameter(f'MB0{subscript_linear}', 0., prior=(0, 1.), prior_type='gaussian', fixed=False)
             if avirB_free:
                 pars.update_parameter(f'avirB{sub_idz}', 0., prior=(0, 20./hconv), prior_type='uniform', fixed=False)
